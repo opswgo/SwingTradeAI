@@ -165,16 +165,11 @@ class BacktestingEngine:
             # Calculate performance metrics
             performance_metrics = self._calculate_performance_metrics(results['trades'], results['equity_curve'])
             
-            # Ensure equity curve exists
+            # Validate equity curve exists - no fallbacks allowed
             logger.info(f"📊 Equity curve status: {len(results['equity_curve'])} data points, empty={results['equity_curve'].empty}")
             if results['equity_curve'].empty:
-                # Create minimal equity curve if none exists
-                logger.info("🔧 Creating minimal equity curve as fallback")
-                results['equity_curve'] = pd.DataFrame({
-                    'capital': [self.initial_capital],
-                    'daily_return': [0.0]
-                }, index=[start_date])
-                logger.info(f"✅ Fallback equity curve created: {len(results['equity_curve'])} data points")
+                # No fallback - fail if we don't have real equity curve data
+                raise ValueError("No equity curve generated from real trading data - cannot provide backtesting results without actual trade history")
             
             # Create backtest results
             backtest_results = BacktestResults(

@@ -112,30 +112,9 @@ class Sprint2UserAcceptanceTests:
             print(f"✅ Using real market data for {self.test_symbol}: {len(data)} records")
             
         except Exception as e:
-            print(f"⚠️ Real data fetch failed: {str(e)}")
-            print("📊 Generating synthetic test data...")
-            
-            # Generate synthetic data
-            dates = pd.date_range(end=datetime.now(), periods=120, freq='D')
-            np.random.seed(42)  # For reproducible tests
-            
-            # Generate realistic price data
-            returns = np.random.normal(0.001, 0.02, len(dates))
-            prices = [100]  # Starting price
-            
-            for ret in returns[1:]:
-                prices.append(prices[-1] * (1 + ret))
-            
-            # Create OHLCV data
-            self.sample_data = pd.DataFrame({
-                'Open': [p * np.random.uniform(0.99, 1.01) for p in prices],
-                'High': [p * np.random.uniform(1.00, 1.03) for p in prices],
-                'Low': [p * np.random.uniform(0.97, 1.00) for p in prices],
-                'Close': prices,
-                'Volume': np.random.randint(1000000, 10000000, len(dates))
-            }, index=dates)
-            
-            print(f"✅ Generated synthetic test data: {len(self.sample_data)} records")
+            print(f"❌ Real data fetch failed: {str(e)}")
+            print("❌ CANNOT PROCEED WITHOUT REAL MARKET DATA")
+            raise ValueError(f"Test requires real market data - synthetic data is not acceptable: {str(e)}")
     
     async def _test_technical_analysis(self) -> bool:
         """Test technical analysis capabilities."""
@@ -369,51 +348,12 @@ class Sprint2UserAcceptanceTests:
             return True
             
         except Exception as e:
-            print(f"  ❌ Options chain test failed: {str(e)}")
-            return False
+            print(f"  ❌ Real options data fetch failed: {str(e)}")
+            print("  ❌ CANNOT PROCEED WITHOUT REAL OPTIONS DATA")
+            raise ValueError(f"Test requires real options data - mock data is not acceptable: {str(e)}")
     
-    async def _test_options_with_mock_data(self) -> bool:
-        """Test options processing with mock data when real data unavailable."""
-        try:
-            print("  📊 Testing options processing with mock data...")
-            
-            # Create mock options data
-            strikes = np.arange(140, 180, 5)  # Strike prices around current price
-            
-            mock_calls = pd.DataFrame({
-                'strike': strikes,
-                'lastPrice': np.random.uniform(1, 20, len(strikes)),
-                'volume': np.random.randint(0, 1000, len(strikes)),
-                'openInterest': np.random.randint(0, 5000, len(strikes)),
-                'impliedVolatility': np.random.uniform(0.15, 0.4, len(strikes))
-            })
-            
-            # Test Greeks calculation
-            current_price = 160.0
-            time_to_exp = 30/365  # 30 days
-            
-            processed_calls = await self.options_processor._process_options_data(
-                mock_calls, 'call', current_price, time_to_exp
-            )
-            
-            if processed_calls.empty:
-                print("  ❌ Mock options processing failed")
-                return False
-            
-            # Check for calculated fields
-            expected_fields = ['moneyness', 'intrinsic_value', 'time_value']
-            missing_fields = [field for field in expected_fields if field not in processed_calls.columns]
-            
-            if missing_fields:
-                print(f"  ❌ Missing calculated fields: {missing_fields}")
-                return False
-            
-            print("  ✅ Mock options processing successful")
-            return True
-            
-        except Exception as e:
-            print(f"  ❌ Mock options test failed: {str(e)}")
-            return False
+    # REMOVED: Mock options data testing method - violates real data requirement
+    # All tests must use real market data or fail gracefully
     
     async def _test_postgresql_integration(self) -> bool:
         """Test PostgreSQL integration."""

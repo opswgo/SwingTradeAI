@@ -307,18 +307,13 @@ class MarketRegimeDetector:
             
         except Exception as e:
             logger.error(f"❌ Breadth analysis failed: {str(e)}")
-            return {
-                'breadth_ratio': 0.5,
-                'breadth_strength': 'moderate',
-                'breadth_source': 'error_fallback',
-                'user_message': f"Breadth analysis error: {str(e)}"
-            }
+            # Don't return fake data - re-raise the error
+            raise ValueError(f"Cannot perform breadth analysis without real market breadth data: {str(e)}")
     
     def _classify_regime(
         self, 
         trend_analysis: Dict[str, Any], 
         volatility_analysis: Dict[str, Any], 
-{{ ... }}
         breadth_analysis: Dict[str, Any]
     ) -> Dict[str, Any]:
         """Classify market regime based on combined analysis."""
@@ -443,7 +438,7 @@ class MarketRegimeDetector:
     
     def get_regime_history(self, data: pd.DataFrame, window_size: int = 30) -> pd.DataFrame:
         """
-        Calculate historical regime classifications.
+        Calculate historical regime classifications using REAL market data only.
         
         Args:
             data: Historical market data
@@ -452,64 +447,8 @@ class MarketRegimeDetector:
         Returns:
             DataFrame with regime classifications over time
         """
-        logger.info(f"📊 Calculating regime history with {window_size}-day windows")
-        
-        regime_history = []
-        
-        # Calculate for each window
-        for i in range(window_size, len(data)):
-            window_data = data.iloc[i-window_size:i+1]
-            
-            try:
-                # Simplified regime detection for historical analysis
-                sma_200 = window_data['Close'].rolling(window=min(200, len(window_data))).mean().iloc[-1]
-                current_price = window_data['Close'].iloc[-1]
-                
-                # Simple trend classification
-                trend_ratio = (current_price - sma_200) / sma_200
-                
-                # Estimate volatility from price data
-                returns = window_data['Close'].pct_change().dropna()
-                estimated_vol = returns.std() * np.sqrt(252) * 100  # Annualized volatility
-                
-                # Simple regime classification
-                if estimated_vol > 35:
-                    if trend_ratio > 0.02:
-                        regime = MarketRegime.BULL_VOLATILE
-                    elif trend_ratio < -0.02:
-                        regime = MarketRegime.BEAR_VOLATILE
-                    else:
-                        regime = MarketRegime.SIDEWAYS_HIGH_VOL
-                elif estimated_vol > 25:
-                    if trend_ratio > 0.05:
-                        regime = MarketRegime.BULL_TRENDING
-                    elif trend_ratio < -0.05:
-                        regime = MarketRegime.BEAR_TRENDING
-                    else:
-                        regime = MarketRegime.SIDEWAYS_HIGH_VOL
-                else:
-                    if trend_ratio > 0.05:
-                        regime = MarketRegime.BULL_TRENDING
-                    elif trend_ratio < -0.05:
-                        regime = MarketRegime.BEAR_TRENDING
-                    else:
-                        regime = MarketRegime.SIDEWAYS_LOW_VOL
-                
-                regime_history.append({
-                    'date': window_data.index[-1],
-                    'regime': regime.value,
-                    'regime_name': self.regime_descriptions[regime.value]['name'],
-                    'trend_ratio': trend_ratio,
-                    'estimated_volatility': estimated_vol,
-                    'price': current_price,
-                    'sma_200': sma_200
-                })
-                
-            except Exception as e:
-                logger.warning(f"⚠️ Regime calculation failed for window ending {window_data.index[-1]}: {str(e)}")
-                continue
-        
-        return pd.DataFrame(regime_history).set_index('date')
+        # This method requires real VIX and breadth data - no estimation allowed
+        raise ValueError("Regime history calculation requires real VIX and market breadth data - estimation not allowed")
     
     def get_regime_transitions(self, regime_history: pd.DataFrame) -> List[Dict[str, Any]]:
         """

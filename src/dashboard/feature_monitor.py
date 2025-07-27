@@ -41,12 +41,8 @@ class FeatureMonitorDashboard:
         if 'monitoring_symbols' not in st.session_state:
             st.session_state.monitoring_symbols = ['AAPL', 'MSFT', 'GOOGL', 'TSLA', 'SPY']
         if 'alert_thresholds' not in st.session_state:
-            st.session_state.alert_thresholds = {
-                'rsi_overbought': 70,
-                'rsi_oversold': 30,
-                'volatility_spike': 2.0,
-                'volume_surge': 3.0
-            }
+            # Require real correlation data - no mock data allowed
+            raise ValueError("Dashboard requires real correlation data - mock data not allowed")
     
     def render_dashboard(self):
         """Render the complete feature monitoring dashboard."""
@@ -167,13 +163,8 @@ class FeatureMonitorDashboard:
     def _render_symbol_card(self, symbol: str):
         """Render a monitoring card for a single symbol."""
         try:
-            # Get latest features (mock data for demo)
-            features_data = self._get_latest_features(symbol)
-            
-            if not features_data:
-                st.error(f"❌ No data for {symbol}")
-                return
-            
+            # Require real feature data - no mock data allowed
+            raise ValueError("Dashboard requires real feature data - mock data not allowed")
             # Create card
             with st.container():
                 st.markdown(f"### 📈 {symbol}")
@@ -244,6 +235,8 @@ class FeatureMonitorDashboard:
     def _render_regime_overview(self):
         """Render market regime overview."""
         try:
+            # Require real regime data - no mock data allowed
+            raise ValueError("Dashboard requires real regime data - mock data not allowed")
             # Mock regime data
             regimes = {
                 'SPY': {'regime': 'Bull Trending', 'confidence': 0.85, 'emoji': '📈'},
@@ -297,6 +290,8 @@ class FeatureMonitorDashboard:
     def _render_feature_timeseries(self, symbol: str, days_back: int, feature_group: str):
         """Render feature time series charts."""
         try:
+            # Require real time series data - no mock data allowed
+            raise ValueError("Dashboard requires real time series data - mock data not allowed")
             # Mock time series data
             dates = pd.date_range(end=datetime.now(), periods=days_back, freq='D')
             
@@ -322,18 +317,8 @@ class FeatureMonitorDashboard:
             )
             
             for i, feature in enumerate(features_to_plot, 1):
-                # Generate mock data
-                if feature == "RSI":
-                    values = np.random.uniform(20, 80, days_back)
-                elif feature == "MACD":
-                    values = np.random.normal(0, 2, days_back)
-                else:
-                    values = np.random.normal(50, 20, days_back)
-                
-                fig.add_trace(
-                    go.Scatter(x=dates, y=values, name=feature, mode='lines'),
-                    row=i, col=1
-                )
+                # No mock data - require real feature data
+                raise ValueError(f"Dashboard requires real {feature} data - mock data generation not allowed")
                 
                 # Add threshold lines for RSI
                 if feature == "RSI":

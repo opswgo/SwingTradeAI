@@ -451,11 +451,11 @@ class RegimeAwareModel:
                                     0)))  # Sell
         
         # Get regime labels
-        if 'regime' in data.columns:
-            regimes = data['regime'].fillna('bull_trending').values
+        if 'regime' in data.columns and not data['regime'].isna().all():
+            regimes = data['regime'].values
         else:
-            # Create default regime column if it doesn't exist
-            regimes = np.full(len(data), 'bull_trending')
+            # No fallback regimes - require real regime data
+            raise ValueError("Training requires real market regime data - cannot train on estimated or default regimes")
         
         # Remove NaN rows
         valid_mask = ~(np.isnan(X).any(axis=1) | np.isnan(y) | pd.isna(regimes))
