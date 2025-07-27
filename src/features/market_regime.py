@@ -245,14 +245,11 @@ class MarketRegimeDetector:
                         current_vix = vix_hist['Close'].iloc[-1]
                         vix_source = 'yfinance'
                     else:
-                        # Fallback: estimate volatility
-                        current_vix = 20.0  # Default moderate volatility
-                        vix_source = 'estimated'
-                        logger.warning("⚠️ Using estimated VIX value")
-                except:
-                    current_vix = 20.0
-                    vix_source = 'estimated'
-                    logger.warning("⚠️ VIX fetch failed, using estimated value")
+                        # No fallback - fail if we don't have real VIX data
+                        raise ValueError("No real VIX data available - cannot make reliable volatility assessment")
+                except Exception as e:
+                    # No fallback - fail if we don't have real VIX data
+                    raise ValueError(f"VIX fetch failed: {str(e)} - cannot make reliable volatility assessment")
             
             # Classify volatility level
             thresholds = self.indicator_thresholds['vix']
@@ -276,12 +273,8 @@ class MarketRegimeDetector:
             
         except Exception as e:
             logger.error(f"❌ Volatility analysis failed: {str(e)}")
-            return {
-                'vix_value': 20.0,
-                'volatility_level': 'medium',
-                'vix_source': 'error_fallback',
-                'user_message': f"Volatility analysis error: {str(e)}"
-            }
+            # Don't return fake data - re-raise the error
+            raise ValueError(f"Cannot perform volatility analysis without real VIX data: {str(e)}")
     
     async def _analyze_breadth(self, breadth_data: Optional[Dict[str, float]] = None) -> Dict[str, Any]:
         """Analyze market breadth indicators."""
@@ -291,11 +284,8 @@ class MarketRegimeDetector:
                 breadth_ratio = breadth_data.get('stocks_above_50ma', 0.5)
                 breadth_source = 'provided'
             else:
-                # Estimate breadth based on common patterns
-                # In a real implementation, this would fetch actual breadth data
-                breadth_ratio = 0.5  # Neutral assumption
-                breadth_source = 'estimated'
-                logger.warning("⚠️ Using estimated breadth data")
+                # No estimation - fail if we don't have real breadth data
+                raise ValueError("No real market breadth data available - cannot make reliable breadth assessment")
             
             # Classify breadth strength
             thresholds = self.indicator_thresholds['breadth']
@@ -328,6 +318,7 @@ class MarketRegimeDetector:
         self, 
         trend_analysis: Dict[str, Any], 
         volatility_analysis: Dict[str, Any], 
+{{ ... }}
         breadth_analysis: Dict[str, Any]
     ) -> Dict[str, Any]:
         """Classify market regime based on combined analysis."""

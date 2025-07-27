@@ -103,9 +103,15 @@ tmp/
 temp/
 .tmp/
 
-# Model files
-models/
+# Model files (trained models, not source code)
+data/models/
+trained_models/
 *.model
+*.pkl
+*.joblib
+*.h5
+*.pt
+*.pth
 *.joblib
 *.h5
 *.pb
