@@ -312,20 +312,8 @@ class RegimeAwareModel:
             
             # Get regime-specific model
             if current_regime not in self.regime_models:
-                logger.warning(f"⚠️ No model for regime {current_regime}, using fallback")
-                # Try common regime mappings
-                regime_mappings = {
-                    'bear_trending': 'bull_trending',
-                    'sideways': 'bull_trending', 
-                    'volatile': 'bull_trending',
-                    'crisis': 'bull_trending'
-                }
-                if current_regime in regime_mappings and regime_mappings[current_regime] in self.regime_models:
-                    current_regime = regime_mappings[current_regime]
-                    logger.info(f"✅ Using {current_regime} model as fallback")
-                else:
-                    current_regime = list(self.regime_models.keys())[0]  # Use first available
-                    logger.info(f"✅ Using {current_regime} model as default fallback")
+                logger.error(f"❌ No model for regime {current_regime}, cannot proceed without real data")
+                raise ValueError(f"No trained model available for regime {current_regime} - requires real data setup")
             
             model = self.regime_models[current_regime]
             

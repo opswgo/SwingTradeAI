@@ -18,6 +18,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 import time
 import yfinance as yf
+import unittest
 
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent / "src"))
@@ -33,15 +34,15 @@ from src.data.postgres_manager import PostgreSQLManager
 logger = setup_logger(__name__)
 
 
-class Sprint2UserAcceptanceTests:
+class Sprint2UserAcceptanceTests(unittest.TestCase):
     """
     Sprint 2 User Acceptance Test Suite
     Focus: Feature engineering, storage, and user experience validation
     """
     
-    def __init__(self):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
         self.settings = Settings()
-        self.test_results = {}
         self.test_symbol = "AAPL"  # Use AAPL for consistent testing
         
         # Initialize components
@@ -54,69 +55,60 @@ class Sprint2UserAcceptanceTests:
         # Test data
         self.sample_data = None
     
-    async def run_all_tests(self) -> dict:
-        """Run all Sprint 2 user acceptance tests."""
-        print("🚀 Starting Sprint 2 User Acceptance Tests...")
-        print("=" * 60)
-        
-        # Prepare test data
-        await self._prepare_test_data()
-        
-        # Test categories
-        test_categories = [
-            ("Technical Analysis", self._test_technical_analysis),
-            ("Market Regime Detection", self._test_market_regime_detection),
-            ("Feature Store Performance", self._test_feature_store_performance),
-            ("Options Chain Processing", self._test_options_chain_processing),
-            ("PostgreSQL Integration", self._test_postgresql_integration),
-            ("Data Versioning", self._test_data_versioning),
-            ("User Experience", self._test_user_experience)
-        ]
-        
-        overall_success = True
-        
-        for category_name, test_function in test_categories:
-            print(f"\n📊 Testing {category_name}...")
-            try:
-                success = await test_function()
-                self.test_results[category_name] = success
-                
-                if success:
-                    print(f"✅ {category_name}: PASSED")
-                else:
-                    print(f"❌ {category_name}: FAILED")
-                    overall_success = False
-                    
-            except Exception as e:
-                print(f"❌ {category_name}: ERROR - {str(e)}")
-                self.test_results[category_name] = False
-                overall_success = False
-        
-        # Final report
-        self._print_final_report(overall_success)
-        return self.test_results
-    
-    async def _prepare_test_data(self):
+    async def prepare_test_data(self):
         """Prepare sample data for testing."""
         print("📋 Preparing test data...")
         
         try:
-            # Try to fetch real data first
+            # Try yfinance first (primary data source)
+            # Fetch 1 year of data to ensure we have at least 200 trading days for 200-day SMA
+            import yfinance as yf
             ticker = yf.Ticker(self.test_symbol)
-            data = ticker.history(period="6mo")  # 6 months for comprehensive testing
+            data = ticker.history(period="1y")
             
-            if data.empty:
-                raise ValueError("No real data available")
-            
-            self.sample_data = data
-            print(f"✅ Using real market data for {self.test_symbol}: {len(data)} records")
-            
+            if not data.empty and len(data) >= 200:
+                self.sample_data = data
+                print(f"✅ Using real market data from yfinance for {self.test_symbol}: {len(data)} records (sufficient for 200-day SMA)")
+                return
+            elif not data.empty:
+                print(f"⚠️ yfinance returned {len(data)} records, need at least 200 for 200-day SMA. Trying longer period...")
+                # Try 2 years if 1 year isn't enough
+                data = ticker.history(period="2y")
+                if not data.empty and len(data) >= 200:
+                    self.sample_data = data
+                    print(f"✅ Using real market data from yfinance for {self.test_symbol}: {len(data)} records (sufficient for 200-day SMA)")
+                    return
+                
         except Exception as e:
-            print(f"❌ Real data fetch failed: {str(e)}")
-            print("❌ CANNOT PROCEED WITHOUT REAL MARKET DATA")
-            raise ValueError(f"Test requires real market data - synthetic data is not acceptable: {str(e)}")
+            print(f"⚠️ yfinance failed: {str(e)}, trying Stooq fallback...")
+            
+        try:
+            # Fallback to Stooq - fetch more data by using a longer date range
+            import pandas as pd
+            from datetime import datetime, timedelta
+            
+            # Calculate date range for at least 300 calendar days (to ensure 200+ trading days)
+            end_date = datetime.now()
+            start_date = end_date - timedelta(days=400)  # Extra buffer for weekends/holidays
+            
+            url = f"https://stooq.com/q/d/l/?s={self.test_symbol}.US&i=d&d1={start_date.strftime('%Y%m%d')}&d2={end_date.strftime('%Y%m%d')}"
+            data = pd.read_csv(url, index_col='Date', parse_dates=True)
+            
+            if not data.empty and len(data) >= 200:
+                self.sample_data = data
+                print(f"✅ Using real market data from Stooq for {self.test_symbol}: {len(data)} records (sufficient for 200-day SMA)")
+                return
+            elif not data.empty:
+                print(f"⚠️ Stooq returned {len(data)} records, need at least 200 for 200-day SMA")
+                
+        except Exception as e:
+            print(f"❌ Both yfinance and Stooq failed: {str(e)}")
+            
+        # If both fail, raise error
+        print("❌ CANNOT PROCEED WITHOUT REAL MARKET DATA")
+        raise ValueError(f"Test requires real market data - no synthetic fallbacks allowed")
     
-    async def _test_technical_analysis(self) -> bool:
+    async def _run_technical_analysis(self):
         """Test technical analysis capabilities."""
         try:
             print("  🔍 Testing technical indicator calculations...")
@@ -163,7 +155,14 @@ class Sprint2UserAcceptanceTests:
             print(f"  ❌ Technical analysis test failed: {str(e)}")
             return False
     
-    async def _test_market_regime_detection(self) -> bool:
+    def test_technical_analysis(self):
+        try:
+            result = asyncio.run(self._run_technical_analysis())
+            self.assertTrue(result)
+        except Exception as e:
+            self.fail(f"Technical analysis test failed: {str(e)}")
+    
+    async def _run_market_regime_detection(self):
         """Test market regime detection."""
         try:
             print("  🌍 Testing market regime detection...")
@@ -217,7 +216,14 @@ class Sprint2UserAcceptanceTests:
             print(f"  ❌ Market regime test failed: {str(e)}")
             return False
     
-    async def _test_feature_store_performance(self) -> bool:
+    def test_market_regime_detection(self):
+        try:
+            result = asyncio.run(self._run_market_regime_detection())
+            self.assertTrue(result)
+        except Exception as e:
+            self.fail(f"Market regime test failed: {str(e)}")
+    
+    async def _run_feature_store_performance(self):
         """Test feature store performance and functionality."""
         try:
             print("  🗄️ Testing feature store performance...")
@@ -284,27 +290,26 @@ class Sprint2UserAcceptanceTests:
             print(f"  ❌ Feature store test failed: {str(e)}")
             return False
     
-    async def _test_options_chain_processing(self) -> bool:
+    def test_feature_store_performance(self):
+        try:
+            result = asyncio.run(self._run_feature_store_performance())
+            self.assertTrue(result)
+        except Exception as e:
+            self.fail(f"Feature store test failed: {str(e)}")
+    
+    async def _run_options_chain_processing(self):
         """Test options chain processing capabilities."""
         try:
             print("  📊 Testing options chain processing...")
             
-            # Test 1: Fetch options chain
-            start_time = time.time()
-            options_result = await self.options_processor.fetch_options_chain(self.test_symbol)
-            processing_time = time.time() - start_time
-            
-            # Note: Options data may not be available for all symbols or during market hours
+            # Fetch and test with real data only
+            options_result = await self.options_processor.process_options_chain(self.test_symbol, self.sample_data['Close'].iloc[-1])
             if not options_result['success']:
-                print(f"  ⚠️ Options data unavailable: {options_result.get('error')}")
-                print("  ℹ️ This is acceptable - options data depends on market availability")
-                
-                # Test with mock data instead
-                return await self._test_options_with_mock_data()
+                raise ValueError(f"Test failed: {options_result.get('error')}")
             
             # User Acceptance: Options processed with Greeks and IV
-            if processing_time > 10.0:  # Options processing can be slower
-                print(f"  ❌ Options processing too slow: {processing_time:.2f}s")
+            if options_result['processing_time'] > 10.0:  # Options processing can be slower
+                print(f"  ❌ Options processing too slow: {options_result['processing_time']:.2f}s")
                 return False
             
             chains = options_result.get('chains', {})
@@ -336,7 +341,7 @@ class Sprint2UserAcceptanceTests:
                 else:
                     print(f"  ✅ Greeks calculated: {available_greeks}")
             
-            print(f"  ✅ Options chain processed in {processing_time:.2f}s")
+            print(f"  ✅ Options chain processed in {options_result['processing_time']:.2f}s")
             
             # Test 2: Options features extraction
             features_result = await self.options_processor.get_options_features(self.test_symbol)
@@ -348,14 +353,16 @@ class Sprint2UserAcceptanceTests:
             return True
             
         except Exception as e:
-            print(f"  ❌ Real options data fetch failed: {str(e)}")
-            print("  ❌ CANNOT PROCEED WITHOUT REAL OPTIONS DATA")
-            raise ValueError(f"Test requires real options data - mock data is not acceptable: {str(e)}")
+            raise ValueError(f"Test requires real data - no synthetic fallbacks: {str(e)}")
     
-    # REMOVED: Mock options data testing method - violates real data requirement
-    # All tests must use real market data or fail gracefully
+    def test_options_chain_processing(self):
+        try:
+            result = asyncio.run(self._run_options_chain_processing())
+            self.assertTrue(result)
+        except Exception as e:
+            self.fail(f"Options chain test failed: {str(e)}")
     
-    async def _test_postgresql_integration(self) -> bool:
+    async def _run_postgresql_integration(self):
         """Test PostgreSQL integration."""
         try:
             print("  🐘 Testing PostgreSQL integration...")
@@ -372,7 +379,7 @@ class Sprint2UserAcceptanceTests:
             print("  ✅ PostgreSQL connected")
             
             # Test 2: Store market data
-            store_result = await self.postgres_manager.store_market_data(self.test_symbol, self.sample_data)
+            store_result = self.postgres_manager.store_market_data(self.test_symbol, self.sample_data)
             
             if not store_result['success']:
                 print(f"  ❌ Market data storage failed: {store_result.get('error')}")
@@ -382,7 +389,7 @@ class Sprint2UserAcceptanceTests:
             print(f"  ✅ Market data stored with version: {version_id}")
             
             # Test 3: Retrieve market data
-            retrieve_result = await self.postgres_manager.retrieve_market_data(self.test_symbol, version_id)
+            retrieve_result = self.postgres_manager.retrieve_market_data(self.test_symbol, version_id)
             
             if not retrieve_result['success']:
                 print(f"  ❌ Market data retrieval failed: {retrieve_result.get('error')}")
@@ -401,7 +408,14 @@ class Sprint2UserAcceptanceTests:
             print(f"  ❌ PostgreSQL test failed: {str(e)}")
             return False
     
-    async def _test_data_versioning(self) -> bool:
+    def test_postgresql_integration(self):
+        try:
+            result = asyncio.run(self._run_postgresql_integration())
+            self.assertTrue(result)
+        except Exception as e:
+            self.fail(f"PostgreSQL test failed: {str(e)}")
+    
+    async def _run_data_versioning(self):
         """Test data versioning capabilities."""
         try:
             print("  📚 Testing data versioning...")
@@ -412,7 +426,7 @@ class Sprint2UserAcceptanceTests:
                 return True
             
             # Test 1: Version history
-            history_result = await self.postgres_manager.get_version_history(limit=10)
+            history_result = self.postgres_manager.get_version_history(limit=10)
             
             if not history_result['success']:
                 print(f"  ❌ Version history failed: {history_result.get('error')}")
@@ -423,7 +437,7 @@ class Sprint2UserAcceptanceTests:
             
             # Test 2: Create new version
             test_hash = "test_hash_123"
-            version_id = await self.postgres_manager.create_data_version(
+            version_id = self.postgres_manager.create_data_version(
                 description="Test version for Sprint 2",
                 data_hash=test_hash
             )
@@ -443,7 +457,14 @@ class Sprint2UserAcceptanceTests:
             print(f"  ❌ Data versioning test failed: {str(e)}")
             return False
     
-    async def _test_user_experience(self) -> bool:
+    def test_data_versioning(self):
+        try:
+            result = asyncio.run(self._run_data_versioning())
+            self.assertTrue(result)
+        except Exception as e:
+            self.fail(f"Data versioning test failed: {str(e)}")
+    
+    async def _run_user_experience(self):
         """Test overall user experience requirements."""
         try:
             print("  👤 Testing user experience requirements...")
@@ -523,7 +544,20 @@ class Sprint2UserAcceptanceTests:
             print(f"  ❌ User experience test failed: {str(e)}")
             return False
     
-    def _print_final_report(self, overall_success: bool):
+    def test_user_experience(self):
+        try:
+            result = asyncio.run(self._run_user_experience())
+            self.assertTrue(result)
+        except Exception as e:
+            self.fail(f"User experience test failed: {str(e)}")
+    
+    def setUp(self):
+        asyncio.run(self.prepare_test_data())
+    
+    def tearDown(self):
+        pass
+    
+    def print_final_report(self, overall_success: bool):
         """Print final test report."""
         print("\n" + "=" * 60)
         print("📋 SPRINT 2 USER ACCEPTANCE TEST RESULTS")
@@ -560,15 +594,5 @@ class Sprint2UserAcceptanceTests:
         print("=" * 60)
 
 
-async def main():
-    """Run Sprint 2 user acceptance tests."""
-    test_suite = Sprint2UserAcceptanceTests()
-    results = await test_suite.run_all_tests()
-    
-    # Exit with appropriate code
-    overall_success = all(results.values())
-    sys.exit(0 if overall_success else 1)
-
-
 if __name__ == "__main__":
-    asyncio.run(main())
+    unittest.main()

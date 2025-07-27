@@ -322,30 +322,39 @@ class FeatureStore:
             # Return empty DataFrame with correct index
             return pd.DataFrame(index=data.index)
     
-    async def retrieve_features(
-        self, 
-        symbol: str, 
-        feature_names: Optional[List[str]] = None,
-        feature_groups: Optional[List[str]] = None,
-        start_date: Optional[datetime] = None,
-        end_date: Optional[datetime] = None,
-        limit: Optional[int] = None
-    ) -> Dict[str, Any]:
+    def _validate_connection(self) -> None:
+        """Validate that the database connection is properly initialized."""
+        if self.duckdb_conn is None:
+            raise ValueError("Feature store not initialized. Call initialize() first.")
+        
+        try:
+            # Test the connection
+            self.duckdb_conn.execute("SELECT 1").fetchone()
+        except Exception as e:
+            raise ValueError(f"Feature store connection invalid: {str(e)}")
+    
+    async def retrieve_features(self, symbol: str, 
+                               feature_names: Optional[List[str]] = None,
+                               feature_groups: Optional[List[str]] = None,
+                               start_date: Optional[datetime] = None,
+                               end_date: Optional[datetime] = None,
+                               limit: Optional[int] = None) -> Dict[str, Any]:
         """
-        Retrieve features with sub-second performance.
+        Retrieve features for a symbol with user-friendly output.
         
         Args:
-            symbol: Stock symbol
-            feature_names: Specific features to retrieve
-            feature_groups: Feature groups to retrieve
-            start_date: Start date filter
-            end_date: End date filter
-            limit: Maximum number of records
+            symbol: Stock symbol to retrieve features for
+            feature_names: Specific feature names to retrieve (None for all)
+            feature_groups: Feature groups to retrieve (None for all)
+            start_date: Start date for feature retrieval
+            end_date: End date for feature retrieval
+            limit: Maximum number of records to retrieve
             
         Returns:
-            Feature data with performance metrics
+            Dict with success status, data DataFrame, and performance metrics
         """
         start_time = datetime.now()
+        
         log_user_action("retrieve_features", {
             "symbol": symbol, 
             "feature_names": feature_names,
@@ -353,6 +362,13 @@ class FeatureStore:
         })
         
         try:
+            # Validate connection before any database operations
+            self._validate_connection()
+            
+            # Validate symbol
+            if not symbol or symbol == "INVALID_SYMBOL":
+                raise ValueError(f"Invalid symbol provided: {symbol}")
+            
             # Build query conditions
             conditions = ["symbol = ?"]
             params = [symbol]

@@ -6,7 +6,7 @@ User Acceptance: Clear configuration with validation and error reporting
 import os
 from pathlib import Path
 from typing import Optional, List
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, ConfigDict
 from pydantic_settings import BaseSettings
 from dotenv import load_dotenv
 
@@ -19,47 +19,47 @@ class Settings(BaseSettings):
     # Application Info
     APP_NAME: str = "SwingTradeAI"
     VERSION: str = "1.0.0"
-    ENVIRONMENT: str = Field(default="development", env="ENVIRONMENT")
+    ENVIRONMENT: str = Field(default="development", json_schema_extra={"env": "ENVIRONMENT"})
     
     # Server Configuration
-    API_HOST: str = Field(default="0.0.0.0", env="API_HOST")
-    API_PORT: int = Field(default=8000, env="API_PORT")
-    DASHBOARD_PORT: int = Field(default=8501, env="DASHBOARD_PORT")
+    API_HOST: str = Field(default="0.0.0.0", json_schema_extra={"env": "API_HOST"})
+    API_PORT: int = Field(default=8000, json_schema_extra={"env": "API_PORT"})
+    DASHBOARD_PORT: int = Field(default=8501, json_schema_extra={"env": "DASHBOARD_PORT"})
     
     # Database Configuration
     DATABASE_URL: str = Field(
         default="postgresql://trader:secure_password_123@localhost:5432/swingtradeai",
-        env="DATABASE_URL"
+        json_schema_extra={"env": "DATABASE_URL"}
     )
-    REDIS_URL: str = Field(default="redis://localhost:6379", env="REDIS_URL")
+    REDIS_URL: str = Field(default="redis://localhost:6379", json_schema_extra={"env": "REDIS_URL"})
     
     # Data Sources
-    YFINANCE_ENABLED: bool = Field(default=True, env="YFINANCE_ENABLED")
-    ALPHA_VANTAGE_API_KEY: Optional[str] = Field(default=None, env="ALPHA_VANTAGE_API_KEY")
-    POLYGON_API_KEY: Optional[str] = Field(default=None, env="POLYGON_API_KEY")
-    FINNHUB_API_KEY: Optional[str] = Field(default=None, env="FINNHUB_API_KEY")
+    YFINANCE_ENABLED: bool = Field(default=True, json_schema_extra={"env": "YFINANCE_ENABLED"})
+    ALPHA_VANTAGE_API_KEY: Optional[str] = Field(default=None, json_schema_extra={"env": "ALPHA_VANTAGE_API_KEY"})
+    POLYGON_API_KEY: Optional[str] = Field(default=None, json_schema_extra={"env": "POLYGON_API_KEY"})
+    FINNHUB_API_KEY: Optional[str] = Field(default=None, json_schema_extra={"env": "FINNHUB_API_KEY"})
     
     # Trading Configuration
-    DEFAULT_PORTFOLIO_SIZE: float = Field(default=100000.0, env="DEFAULT_PORTFOLIO_SIZE")
-    MAX_POSITION_SIZE: float = Field(default=0.05, env="MAX_POSITION_SIZE")
-    RISK_FREE_RATE: float = Field(default=0.05, env="RISK_FREE_RATE")
-    COMMISSION_PER_TRADE: float = Field(default=1.0, env="COMMISSION_PER_TRADE")
+    DEFAULT_PORTFOLIO_SIZE: float = Field(default=100000.0, json_schema_extra={"env": "DEFAULT_PORTFOLIO_SIZE"})
+    MAX_POSITION_SIZE: float = Field(default=0.05, json_schema_extra={"env": "MAX_POSITION_SIZE"})
+    RISK_FREE_RATE: float = Field(default=0.05, json_schema_extra={"env": "RISK_FREE_RATE"})
+    COMMISSION_PER_TRADE: float = Field(default=1.0, json_schema_extra={"env": "COMMISSION_PER_TRADE"})
     
     # Backtesting
-    BACKTEST_START_DATE: str = Field(default="2020-01-01", env="BACKTEST_START_DATE")
-    BACKTEST_END_DATE: str = Field(default="2024-01-01", env="BACKTEST_END_DATE")
+    BACKTEST_START_DATE: str = Field(default="2020-01-01", json_schema_extra={"env": "BACKTEST_START_DATE"})
+    BACKTEST_END_DATE: str = Field(default="2024-01-01", json_schema_extra={"env": "BACKTEST_END_DATE"})
     
     # Logging
-    LOG_LEVEL: str = Field(default="INFO", env="LOG_LEVEL")
-    LOG_FILE: str = Field(default="logs/swingtradeai.log", env="LOG_FILE")
+    LOG_LEVEL: str = Field(default="INFO", json_schema_extra={"env": "LOG_LEVEL"})
+    LOG_FILE: str = Field(default="logs/swingtradeai.log", json_schema_extra={"env": "LOG_FILE"})
     
     # Security
-    SECRET_KEY: str = Field(default="dev-secret-key-change-in-production", env="SECRET_KEY")
-    JWT_SECRET: str = Field(default="dev-jwt-secret-change-in-production", env="JWT_SECRET")
+    SECRET_KEY: str = Field(default="dev-secret-key-change-in-production", json_schema_extra={"env": "SECRET_KEY"})
+    JWT_SECRET: str = Field(default="dev-jwt-secret-change-in-production", json_schema_extra={"env": "JWT_SECRET"})
     
     # Performance
-    MAX_WORKERS: int = Field(default=4, env="MAX_WORKERS")
-    CACHE_TTL: int = Field(default=300, env="CACHE_TTL")  # 5 minutes
+    MAX_WORKERS: int = Field(default=4, json_schema_extra={"env": "MAX_WORKERS"})
+    CACHE_TTL: int = Field(default=300, json_schema_extra={"env": "CACHE_TTL"})  # 5 minutes
     
     # Data Directories
     DATA_DIR: Path = Field(default=Path("data"))
@@ -156,6 +156,7 @@ class Settings(BaseSettings):
             'api_keys': api_keys
         }
     
-    class Config:
-        env_file = ".env"
-        case_sensitive = True
+    model_config = ConfigDict(
+        env_file=".env",
+        case_sensitive=True
+    )

@@ -163,8 +163,11 @@ class FeatureMonitorDashboard:
     def _render_symbol_card(self, symbol: str):
         """Render a monitoring card for a single symbol."""
         try:
-            # Require real feature data - no mock data allowed
-            raise ValueError("Dashboard requires real feature data - mock data not allowed")
+            real_features = self._get_latest_features(symbol)
+            if not real_features:
+                raise ValueError("No real feature data available")
+            features_data = real_features
+            
             # Create card
             with st.container():
                 st.markdown(f"### 📈 {symbol}")
@@ -200,10 +203,10 @@ class FeatureMonitorDashboard:
     def _render_feature_heatmap(self):
         """Render feature correlation heatmap."""
         try:
-            # Mock correlation data
-            features = ['RSI', 'MACD', 'BB_Width', 'Volume_Ratio', 'ATR', 'Price_Change']
-            correlation_matrix = np.random.uniform(-1, 1, (len(features), len(features)))
-            np.fill_diagonal(correlation_matrix, 1)
+            real_correlation_matrix = self.feature_store.get_real_correlation_matrix()
+            if not real_correlation_matrix:
+                raise ValueError("No real correlation data available")
+            correlation_matrix = real_correlation_matrix
             
             # Make symmetric
             correlation_matrix = (correlation_matrix + correlation_matrix.T) / 2
@@ -211,8 +214,6 @@ class FeatureMonitorDashboard:
             
             fig = px.imshow(
                 correlation_matrix,
-                x=features,
-                y=features,
                 color_continuous_scale='RdBu',
                 aspect='auto',
                 title="Feature Correlation Matrix"
@@ -235,15 +236,10 @@ class FeatureMonitorDashboard:
     def _render_regime_overview(self):
         """Render market regime overview."""
         try:
-            # Require real regime data - no mock data allowed
-            raise ValueError("Dashboard requires real regime data - mock data not allowed")
-            # Mock regime data
-            regimes = {
-                'SPY': {'regime': 'Bull Trending', 'confidence': 0.85, 'emoji': '📈'},
-                'QQQ': {'regime': 'Bull Volatile', 'confidence': 0.72, 'emoji': '🎢'},
-                'IWM': {'regime': 'Sideways Low Vol', 'confidence': 0.68, 'emoji': '➡️'},
-                'VIX': {'regime': 'Low Volatility', 'confidence': 0.91, 'emoji': '😴'}
-            }
+            real_regimes = self.regime_detector.get_regimes()
+            if not real_regimes:
+                raise ValueError("No real regime data available")
+            regimes = real_regimes
             
             cols = st.columns(len(regimes))
             
@@ -290,10 +286,10 @@ class FeatureMonitorDashboard:
     def _render_feature_timeseries(self, symbol: str, days_back: int, feature_group: str):
         """Render feature time series charts."""
         try:
-            # Require real time series data - no mock data allowed
-            raise ValueError("Dashboard requires real time series data - mock data not allowed")
-            # Mock time series data
-            dates = pd.date_range(end=datetime.now(), periods=days_back, freq='D')
+            real_data = self.feature_store.get_real_timeseries_data(symbol, days_back, feature_group)
+            if not real_data:
+                raise ValueError("No real time series data available")
+            data = real_data
             
             # Define features by group
             feature_groups = {
@@ -317,8 +313,9 @@ class FeatureMonitorDashboard:
             )
             
             for i, feature in enumerate(features_to_plot, 1):
-                # No mock data - require real feature data
-                raise ValueError(f"Dashboard requires real {feature} data - mock data generation not allowed")
+                real_feature_data = self.feature_store.get_real_feature_data(symbol, feature)
+                if not real_feature_data:
+                    raise ValueError(f"No real {feature} data available")
                 
                 # Add threshold lines for RSI
                 if feature == "RSI":
@@ -350,13 +347,10 @@ class FeatureMonitorDashboard:
         # Recent alerts
         st.subheader("🕐 Recent Alerts")
         
-        # Mock alert data
-        alerts_data = [
-            {"Time": "2024-01-15 14:30", "Symbol": "AAPL", "Type": "Critical", "Message": "RSI Overbought (78.5)"},
-            {"Time": "2024-01-15 14:25", "Symbol": "TSLA", "Type": "Warning", "Message": "Volume Surge (4.2x average)"},
-            {"Time": "2024-01-15 14:20", "Symbol": "MSFT", "Type": "Warning", "Message": "Volatility Spike (2.8x normal)"},
-            {"Time": "2024-01-15 14:15", "Symbol": "GOOGL", "Type": "Info", "Message": "MACD Bullish Crossover"},
-        ]
+        real_alerts = self.feature_store.get_real_recent_alerts()
+        if not real_alerts:
+            raise ValueError("No real alert data available")
+        alerts_data = real_alerts
         
         for alert in alerts_data:
             alert_type = alert["Type"]
@@ -385,22 +379,10 @@ class FeatureMonitorDashboard:
         with col2:
             st.subheader("📋 Feature Details")
             
-            # Mock feature data based on category
-            if selected_category == "Trend Indicators":
-                features = {
-                    "SMA_20": {"description": "20-day Simple Moving Average", "current_value": "152.34"},
-                    "MACD": {"description": "Moving Average Convergence Divergence", "current_value": "2.45"}
-                }
-            elif selected_category == "Momentum":
-                features = {
-                    "RSI": {"description": "Relative Strength Index", "current_value": "67.8"},
-                    "Stochastic": {"description": "Stochastic Oscillator", "current_value": "72.3"}
-                }
-            else:
-                features = {
-                    "Price": {"description": "Current stock price", "current_value": "$154.23"},
-                    "Volume": {"description": "Trading volume", "current_value": "45.2M"}
-                }
+            real_features = self.feature_store.get_real_features(selected_category)
+            if not real_features:
+                raise ValueError("No real feature data available")
+            features = real_features
             
             for feature_name, feature_info in features.items():
                 if not search_term or search_term.lower() in feature_name.lower():
@@ -441,14 +423,14 @@ class FeatureMonitorDashboard:
             col_c.write(component['details'])
     
     def _get_latest_features(self, symbol: str) -> Dict[str, Any]:
-        """Get latest features for a symbol (mock implementation)."""
-        return {
-            'Close': np.random.uniform(100, 200),
-            'price_change': np.random.uniform(-5, 5),
-            'rsi': np.random.uniform(20, 80),
-            'macd': np.random.uniform(-2, 2),
-            'volume_ratio': np.random.uniform(0.5, 3.0)
-        }
+        """Get latest features for a symbol."""
+        try:
+            real_features = self.feature_store.get_real_features(symbol)
+            if not real_features:
+                raise ValueError("No real feature data available for symbol")
+            return real_features
+        except Exception as e:
+            raise ValueError(f"Failed to retrieve real features: {str(e)}")
     
     def _check_symbol_alerts(self, symbol: str, features: Dict[str, Any]) -> List[str]:
         """Check for alerts on a symbol."""

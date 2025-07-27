@@ -1,5 +1,7 @@
 #!/bin/zsh
 
+export SSL_CERT_FILE=$(python -m certifi)
+
 # Set TA-Lib paths for Homebrew on Apple Silicon
 if [ -d "/opt/homebrew/opt/ta-lib" ]; then
     export LDFLAGS="-L/opt/homebrew/opt/ta-lib/lib"
