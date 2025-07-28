@@ -1,5 +1,29 @@
 # NEAT-Based Options Premium Harvesting System
 
+## 🚨 MUST FOLLOW - CRITICAL DEVELOPMENT STANDARDS
+
+### WORKING CODE IS PARAMOUNT
+- **All code must use REAL DATA ONLY and be world-class, production-ready**
+- **No synthetic, mock, or fabricated data allowed**
+- **All systems must be fully functional, not just proof-of-concept**
+- **Every component must work in real-world conditions**
+
+### RIGOROUS TESTING REQUIREMENTS
+- **All tests must rigorously validate ACTUAL REQUIREMENTS and REAL USER USE CASES**
+- **Use REAL DATA ONLY - no synthetic or fabricated test data**
+- **Tests must be grounded in meaningful scenarios with clear acceptance criteria**
+- **Synthetic or overly optimistic tests that exist only to make the system appear successful are NOT ACCEPTABLE**
+- **Passing irrelevant or fabricated tests is considered a FAILURE of validation, not a success**
+- **Every test must validate real business value and user requirements**
+
+### DEVELOPMENT APPROACH
+- **Focus on real-world functionality and meaningful validation**
+- **Production-ready code from day one**
+- **Continuous progress through sprints without stopping unless questions arise**
+- **World-class standards in all implementations**
+
+---
+
 ## Project Overview
 Build an evolutionary AI system using NEAT (NeuroEvolution of Augmenting Topologies) to identify optimal cash-secured put opportunities for premium harvesting. The system targets stocks expected to move UP, allowing collection of put premiums without assignment.
 
