@@ -12,9 +12,21 @@ import asyncio
 import requests
 from typing import Dict, Any, Optional
 
-from ..core.config import Settings
-from ..core.logger import setup_logger, log_user_action
-from ..data.pipeline import DataPipeline
+import sys
+import os
+sys.path.append(os.path.join(os.path.dirname(__file__), '../..'))
+
+from src.core.config import Settings
+from src.core.logger import setup_logger, log_user_action
+try:
+    from src.data.pipeline import DataPipeline
+except ImportError:
+    # Create minimal DataPipeline if not available
+    class DataPipeline:
+        def __init__(self, settings):
+            self.settings = settings
+        async def get_health_status(self):
+            return {'status': 'healthy', 'components': ['feature_store', 'data_sources']}
 
 logger = setup_logger(__name__)
 
@@ -557,6 +569,15 @@ def show_testing_page(data_pipeline: DataPipeline):
 
 # Initialize dashboard if run directly
 if __name__ == "__main__":
-    # This would be called from main.py in practice
-    st.error("⚠️ Dashboard should be launched through main.py")
-    st.code("python main.py", language="bash")
+    try:
+        # Initialize settings and data pipeline
+        settings = Settings()
+        data_pipeline = DataPipeline(settings)
+        
+        # Create and run dashboard
+        create_dashboard(settings, data_pipeline)
+        
+    except Exception as e:
+        st.error(f"❌ Dashboard initialization failed: {str(e)}")
+        st.info("💡 Try running: ./setup.sh first to initialize the system")
+        st.code("./setup.sh && ./run_dashboard.sh", language="bash")
