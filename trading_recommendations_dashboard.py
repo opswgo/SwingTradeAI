@@ -235,6 +235,25 @@ def create_trading_dashboard():
                     y=recs['Weekly_Yield'] * 100
                 )
                 
+                # Add legend and annotations
+                fig.update_layout(
+                    showlegend=True,
+                    annotations=[
+                        dict(
+                            x=0.02,
+                            y=0.98,
+                            xref="paper",
+                            yref="paper",
+                            text="<b>Legend:</b><br>• Bubble Size = Premium Amount<br>• Color = AI Score (Higher is Better)<br>• X-axis = Assignment Risk<br>• Y-axis = Weekly Premium Yield",
+                            showarrow=False,
+                            bgcolor="rgba(255,255,255,0.9)",
+                            bordercolor="black",
+                            borderwidth=1,
+                            font=dict(size=10)
+                        )
+                    ]
+                )
+                
                 st.plotly_chart(fig, use_container_width=True)
                 
                 # Export recommendations

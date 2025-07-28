@@ -14,6 +14,7 @@ AI-driven options trading system focused on short- to mid-term calls and puts (1
 ## 📅 Sprint Planning
 
 ### 🔍 Backlog (Prioritized & Combined)
+- [ ] **HIGH PRIORITY**: Integrate Finviz 52-week high screener (https://finviz.com/screener.ashx?v=111&f=ta_perf_52w500o&ft=4)
 - [ ] **COMBINED**: Architecture review + MVP acceptance criteria definition
 - [ ] **COMBINED**: Additional data sources research + options ML feature engineering
 - [ ] **COMBINED**: Database schema design + monitoring infrastructure planning
