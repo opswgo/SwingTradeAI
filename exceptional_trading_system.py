@@ -33,6 +33,7 @@ warnings.filterwarnings('ignore')
 # Import existing NEAT system
 from practical_neat_system import PracticalNEATTrader
 
+@deprecated  # BROKEN: Training components don't actually work, models rejected
 class ExceptionalTradingSystem:
     """EXCEPTIONAL WORLD-CLASS TRADING SYSTEM
     

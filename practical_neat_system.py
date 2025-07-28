@@ -16,7 +16,8 @@ from pathlib import Path
 import warnings
 warnings.filterwarnings('ignore')
 
-class PracticalNEATTrader:
+@deprecated  # BROKEN: Training takes <1 second, produces 46% win rate models
+class PracticalNEATSystem:
     """Practical NEAT system focused on human usability and validation."""
     
     def __init__(self):
