@@ -8,16 +8,21 @@ import json
 import logging
 import numpy as np
 import pandas as pd
-from datetime import datetime, timedelta
-from typing import Dict, List, Optional
-from concurrent.futures import ProcessPoolExecutor, as_completed
-from dataclasses import dataclass
-import time
-
-# Import NEAT and our modules
+from typing import Dict, List, Optional, Tuple
 import neat
+import json
+import time
+import tempfile
+import os
+from dataclasses import dataclass, asdict
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import logging
+from datetime import datetime, timedelta
+
 from enhanced_data_pipeline import EnhancedDataPipeline
 from src.database.agent_database import AgentDatabase
+from comprehensive_agent_evaluator import ComprehensiveAgentEvaluator, TradingMetrics, HorizonResults
+from enhanced_output_generator import EnhancedOutputGenerator
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -40,9 +45,12 @@ class AgentTrainingPipeline:
     
     def __init__(self, db_path: str = "data/neat_agents.db"):
         """Initialize training pipeline."""
+        self.logger = logging.getLogger(__name__)
         self.db_path = db_path
         self.agent_db = AgentDatabase(db_path)
         self.data_pipeline = EnhancedDataPipeline()
+        self.evaluator = ComprehensiveAgentEvaluator(self.logger)
+        self.output_generator = EnhancedOutputGenerator()
         
         # Training configuration
         self.training_config = {
@@ -127,48 +135,54 @@ class AgentTrainingPipeline:
             raise
     
     def _create_options_labels(self, data: pd.DataFrame, symbol: str) -> pd.Series:
-        """Create labels for options trading strategy."""
-        horizons = [5, 10, 15, 20]  # 1-4 weeks
+        """Create multi-horizon labels for options trading strategy (1-8 weeks)."""
+        horizons = [5, 10, 15, 20, 25, 30, 35, 40]  # 1-8 weeks
+        horizon_weights = [1.0, 1.2, 1.4, 1.6, 1.8, 2.0, 2.2, 2.4]  # Longer horizons weighted more
+        
         labels = []
         
         for i in range(len(data)):
             if i >= len(data) - max(horizons):
-                labels.append(0)
+                labels.append(0)  # Neutral for insufficient data
                 continue
             
             current_price = data['Close'].iloc[i]
-            signals = []
+            horizon_signals = []
             
-            for horizon in horizons:
+            # Calculate signals for each horizon
+            for j, horizon in enumerate(horizons):
                 if i + horizon < len(data):
                     future_price = data['Close'].iloc[i + horizon]
                     return_pct = (future_price / current_price) - 1
                     
-                    if return_pct > 0.02:
-                        signals.append(2)  # Strong buy signal (sell puts)
-                    elif return_pct > 0.005:
-                        signals.append(1)  # Weak buy signal
-                    elif return_pct < -0.02:
-                        signals.append(-2)  # Strong sell signal
-                    elif return_pct < -0.005:
-                        signals.append(-1)  # Weak sell signal
-                    else:
-                        signals.append(0)  # Neutral
+                    # Direction classification based on return thresholds
+                    if return_pct > 0.03:  # 3%+ gain - strong buy signal (sell puts)
+                        horizon_signals.append(2)
+                    elif return_pct > 0.01:  # 1-3% gain - weak buy signal
+                        horizon_signals.append(1)
+                    elif return_pct < -0.03:  # 3%+ loss - strong sell signal
+                        horizon_signals.append(-2)
+                    elif return_pct < -0.01:  # 1-3% loss - weak sell signal
+                        horizon_signals.append(-1)
+                    else:  # -1% to +1% - neutral
+                        horizon_signals.append(0)
             
-            if signals:
-                weights = np.array([1, 1.5, 2, 2.5][:len(signals)])
-                weighted_signal = np.average(signals, weights=weights)
+            if horizon_signals:
+                # Weighted average of signals (longer horizons matter more)
+                weights = np.array(horizon_weights[:len(horizon_signals)])
+                weighted_signal = np.average(horizon_signals, weights=weights)
                 
-                if weighted_signal > 1:
-                    labels.append(2)
-                elif weighted_signal > 0.25:
-                    labels.append(1)
-                elif weighted_signal < -1:
-                    labels.append(-2)
-                elif weighted_signal < -0.25:
-                    labels.append(-1)
+                # Final direction classification
+                if weighted_signal > 1.0:
+                    labels.append(2)  # Strong buy
+                elif weighted_signal > 0.3:
+                    labels.append(1)  # Weak buy
+                elif weighted_signal < -1.0:
+                    labels.append(-2)  # Strong sell
+                elif weighted_signal < -0.3:
+                    labels.append(-1)  # Weak sell
                 else:
-                    labels.append(0)
+                    labels.append(0)  # Neutral
             else:
                 labels.append(0)
         
@@ -439,35 +453,93 @@ survival_threshold = 0.2
             )
     
     def _evaluate_agent_performance(self, genome, config, training_data: Dict) -> Dict:
-        """Evaluate trained agent performance on test data."""
-        net = neat.nn.FeedForwardNetwork.create(genome, config)
-        
-        test_features = training_data['test']['features'].values
-        test_labels = training_data['test']['labels'].values
-        
-        predictions = []
-        for features in test_features:
-            output = net.activate(features)
-            predicted_class = np.argmax(output) - 2
-            predictions.append(predicted_class)
-        
-        accuracy = np.mean(np.array(predictions) == test_labels)
-        
-        # Simulate detailed trading
-        profit_simulation = self._simulate_detailed_trading(predictions, test_labels)
-        
-        performance_metrics = {
-            'accuracy': accuracy,
-            'fitness_score': genome.fitness,
-            'total_return': profit_simulation['total_return'],
-            'sharpe_ratio': profit_simulation['sharpe_ratio'],
-            'max_drawdown': profit_simulation['max_drawdown'],
-            'win_rate': profit_simulation['win_rate'],
-            'total_trades': profit_simulation['total_trades'],
-            'validation_accuracy': accuracy
+        """Comprehensive agent performance evaluation with backtesting and forward testing."""
+        try:
+            # Use comprehensive evaluator for full analysis
+            trading_metrics, horizon_results = self.evaluator.evaluate_agent_comprehensive(
+                genome, config, training_data
+            )
+            
+            # Generate performance report
+            symbol = training_data['symbol']
+            report = self.evaluator.generate_performance_report(
+                symbol, trading_metrics, horizon_results
+            )
+            
+            # Log comprehensive results
+            self.logger.info(f"\n{report}")
+            
+            # Check if agent meets performance threshold
+            meets_threshold = self.evaluator.meets_performance_threshold(trading_metrics)
+            
+            if not meets_threshold:
+                self.logger.warning(
+                    f"⚠️ {symbol}: Agent does not meet 50%+ outperformance threshold "
+                    f"(Excess return: {trading_metrics.excess_return_pct:.1%})"
+                )
+            
+            # Return comprehensive metrics as dictionary
+            return {
+                'total_return': trading_metrics.total_return,
+                'buy_hold_return': trading_metrics.buy_hold_return,
+                'excess_return': trading_metrics.excess_return,
+                'excess_return_pct': trading_metrics.excess_return_pct,
+                'max_drawdown': trading_metrics.max_drawdown,
+                'current_drawdown': trading_metrics.current_drawdown,
+                'volatility': trading_metrics.volatility,
+                'sharpe_ratio': trading_metrics.sharpe_ratio,
+                'win_rate': trading_metrics.win_rate,
+                'total_trades': trading_metrics.total_trades,
+                'winning_trades': trading_metrics.winning_trades,
+                'losing_trades': trading_metrics.losing_trades,
+                'avg_win': trading_metrics.avg_win,
+                'avg_loss': trading_metrics.avg_loss,
+                'profit_factor': trading_metrics.profit_factor,
+                'lookahead_days': trading_metrics.lookahead_days,
+                'lookahead_weeks': trading_metrics.lookahead_weeks,
+                'direction_accuracy': trading_metrics.direction_accuracy,
+                'price_accuracy': trading_metrics.price_accuracy,
+                'fitness_score': trading_metrics.fitness_score,
+                'fitness_interpretation': trading_metrics.fitness_interpretation,
+                'meets_threshold': meets_threshold,
+                'horizon_results': {k: asdict(v) for k, v in horizon_results.items()},
+                'accuracy': trading_metrics.direction_accuracy,  # Legacy compatibility
+                'validation_accuracy': trading_metrics.direction_accuracy
+            }
+            
+        except Exception as e:
+            self.logger.error(f"Comprehensive evaluation failed: {str(e)}")
+            return self._default_performance_metrics()
+    
+    def _default_performance_metrics(self) -> Dict:
+        """Return default performance metrics when evaluation fails."""
+        return {
+            'total_return': 0.0,
+            'buy_hold_return': 0.0,
+            'excess_return': 0.0,
+            'excess_return_pct': 0.0,
+            'max_drawdown': 0.0,
+            'current_drawdown': 0.0,
+            'volatility': 0.0,
+            'sharpe_ratio': 0.0,
+            'win_rate': 0.0,
+            'total_trades': 0,
+            'winning_trades': 0,
+            'losing_trades': 0,
+            'avg_win': 0.0,
+            'avg_loss': 0.0,
+            'profit_factor': 0.0,
+            'lookahead_days': 0,
+            'lookahead_weeks': 0.0,
+            'direction_accuracy': 0.0,
+            'price_accuracy': 0.0,
+            'fitness_score': 0.1,
+            'fitness_interpretation': 'Failed',
+            'meets_threshold': False,
+            'horizon_results': {},
+            'accuracy': 0.0,
+            'validation_accuracy': 0.0
         }
-        
-        return performance_metrics
     
     def _simulate_detailed_trading(self, predictions: List[int], actual: List[int]) -> Dict:
         """Detailed trading simulation for performance evaluation."""
@@ -519,26 +591,28 @@ survival_threshold = 0.2
     def _save_trained_agent(self, symbol: str, genome, config, 
                           performance_metrics: Dict, training_data: Dict) -> str:
         """Save trained agent to database."""
+        # Convert NEAT genome data to JSON-serializable format
         genome_data = {
-            'nodes': {k: {'bias': v.bias, 'response': v.response, 'activation': v.activation, 'aggregation': v.aggregation} 
+            'nodes': {str(k): {'bias': float(v.bias), 'response': float(v.response), 
+                             'activation': str(v.activation), 'aggregation': str(v.aggregation)} 
                      for k, v in genome.nodes.items()},
-            'connections': {k: {'weight': v.weight, 'enabled': v.enabled} 
+            'connections': {f"{k[0]}-{k[1]}": {'weight': float(v.weight), 'enabled': bool(v.enabled)} 
                            for k, v in genome.connections.items()},
-            'fitness': genome.fitness
+            'fitness': float(genome.fitness) if genome.fitness else 0.0
         }
         
         agent_data = {
-            'symbol': symbol,
+            'symbol': str(symbol),
             'generation': 100,
-            'fitness_score': genome.fitness,
+            'fitness_score': float(genome.fitness) if genome.fitness else 0.0,
             'network_config': {
-                'num_inputs': config.genome_config.num_inputs,
-                'num_outputs': config.genome_config.num_outputs,
-                'activation_default': config.genome_config.activation_default
+                'num_inputs': int(config.genome_config.num_inputs),
+                'num_outputs': int(config.genome_config.num_outputs),
+                'activation_default': str(config.genome_config.activation_default)
             },
             'genome_data': genome_data,
-            'feature_names': training_data['feature_names'],
-            'training_period': training_data['data_period'],
+            'feature_names': list(training_data['feature_names']),
+            'training_period': str(training_data['data_period']),
             'is_champion': True
         }
         
@@ -567,27 +641,276 @@ survival_threshold = 0.2
             except Exception as e:
                 self.logger.error(f"❌ Failed to prepare data for {symbol}: {str(e)}")
         
-        # Train agents sequentially (multiprocessing complex with NEAT)
+        # Train agents with parallel data prep and optimized NEAT
         results = []
-        for symbol in training_data_map.keys():
-            try:
-                result = self.train_single_agent(symbol, training_data_map[symbol])
-                results.append(result)
-                
-                if result.success:
-                    self.logger.info(f"✅ {symbol}: Training completed successfully")
-                else:
-                    self.logger.error(f"❌ {symbol}: Training failed - {result.error_message}")
+        import concurrent.futures
+        import multiprocessing as mp
+        
+        # Use ThreadPoolExecutor for I/O bound operations, limit to avoid overload
+        max_workers = min(len(training_data_map), mp.cpu_count() // 2, 4)
+        
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+            # Submit all training jobs
+            future_to_symbol = {
+                executor.submit(self._train_single_optimized, symbol, training_data): symbol
+                for symbol, training_data in training_data_map.items()
+            }
+            
+            # Process completed jobs
+            for future in concurrent.futures.as_completed(future_to_symbol):
+                symbol = future_to_symbol[future]
+                try:
+                    result = future.result()
+                    results.append(result)
                     
-            except Exception as e:
-                self.logger.error(f"❌ {symbol}: Unexpected error - {str(e)}")
-                results.append(TrainingResult(
-                    symbol=symbol, success=False, best_fitness=0,
-                    generations_completed=0, training_time=0,
-                    agent_id="", performance_metrics={}, error_message=str(e)
-                ))
+                    if result.success:
+                        self.logger.info(f"✅ {symbol}: Training completed (Fitness: {result.best_fitness:.2f}, Time: {result.training_time:.1f}s)")
+                    else:
+                        self.logger.error(f"❌ {symbol}: Training failed - {result.error_message}")
+                        
+                except Exception as e:
+                    self.logger.error(f"❌ {symbol}: Unexpected error - {str(e)}")
+                    results.append(TrainingResult(
+                        symbol=symbol, success=False, best_fitness=0,
+                        generations_completed=0, training_time=0,
+                        agent_id="", performance_metrics={}, error_message=str(e)
+                    ))
         
         return results
+    
+    def _train_single_optimized(self, symbol: str, training_data: Dict) -> TrainingResult:
+        """Optimized single agent training with better progress reporting."""
+        start_time = time.time()
+        
+        try:
+            self.logger.info(f"🚀 Starting optimized training for {symbol}...")
+            
+            num_features = len(training_data['feature_names'])
+            config = self._create_optimized_neat_config(symbol, num_features)
+            
+            population = neat.Population(config)
+            
+            # Enhanced progress reporter
+            class OptimizedProgressReporter(neat.reporting.BaseReporter):
+                def __init__(self, symbol, logger):
+                    self.symbol = symbol
+                    self.logger = logger
+                    self.generation = 0
+                    self.start_time = time.time()
+                
+                def start_generation(self, generation):
+                    self.generation = generation
+                    elapsed = time.time() - self.start_time
+                    self.logger.info(f"🧬 {self.symbol} - Generation {generation} (Elapsed: {elapsed:.1f}s)")
+                
+                def end_generation(self, config, population, species_set):
+                    fitnesses = [g.fitness for g in population.values() if g.fitness is not None]
+                    if fitnesses:
+                        best_fitness = max(fitnesses)
+                        avg_fitness = sum(fitnesses) / len(fitnesses)
+                        self.logger.info(f"📊 {self.symbol} - Gen {self.generation}: Best={best_fitness:.2f}, Avg={avg_fitness:.2f}, Pop={len(fitnesses)}")
+            
+            population.add_reporter(OptimizedProgressReporter(symbol, self.logger))
+            
+            # Optimized fitness function with vectorization
+            def optimized_fitness_function(genomes, config):
+                import numpy as np
+                
+                features = training_data['train']['features'].values
+                labels = training_data['train']['labels'].values
+                
+                for genome_id, genome in genomes:
+                    try:
+                        net = neat.nn.FeedForwardNetwork.create(genome, config)
+                        
+                        # Simplified fitness calculation to avoid broadcasting issues
+                        sample_size = min(100, len(features))  # Use fixed sample size
+                        sample_indices = np.random.choice(len(features), sample_size, replace=False)
+                        
+                        correct_predictions = 0
+                        total_return = 0.0
+                        returns_list = []
+                        
+                        for idx in sample_indices:
+                            try:
+                                output = net.activate(features[idx])
+                                pred = np.argmax(output) - 2
+                                actual = labels[idx]
+                                
+                                # Accuracy tracking
+                                if pred == actual:
+                                    correct_predictions += 1
+                                
+                                # Return calculation
+                                if pred > 0 and actual > 0:
+                                    ret = 0.02  # Win: +2%
+                                elif pred > 0 and actual <= 0:
+                                    ret = -0.015  # Loss: -1.5%
+                                elif pred < 0 and actual < 0:
+                                    ret = 0.015  # Win: +1.5%
+                                elif pred < 0 and actual >= 0:
+                                    ret = -0.01  # Loss: -1%
+                                else:
+                                    ret = 0  # No position
+                                
+                                returns_list.append(ret)
+                                total_return += ret
+                                
+                            except Exception:
+                                returns_list.append(0)
+                        
+                        accuracy = correct_predictions / sample_size
+                        returns_array = np.array(returns_list)
+                        
+                        sharpe = (np.mean(returns_array) / (np.std(returns_array) + 1e-8)) * np.sqrt(252)
+                        
+                        # Profit-focused fitness
+                        fitness = (
+                            total_return * 100 +     # Primary: total profit
+                            sharpe * 10 +            # Secondary: risk-adjusted returns
+                            accuracy * 20 +          # Tertiary: prediction accuracy
+                            -abs(total_return) * 2   # Penalty for excessive risk
+                        )
+                        
+                        genome.fitness = max(fitness, 0.1)  # Ensure positive fitness
+                        
+                    except Exception as e:
+                        genome.fitness = 0.1  # Minimal fitness for failed genomes
+            
+            # Run evolution with early stopping
+            best_genome = None
+            best_fitness = 0
+            generations_without_improvement = 0
+            max_generations = min(self.training_config['max_generations'], 30)  # Limit for speed
+            
+            for generation in range(max_generations):
+                population.run(optimized_fitness_function, 1)
+                
+                # Check for improvement
+                current_best = max(population.population.values(), key=lambda g: g.fitness or 0)
+                if current_best.fitness > best_fitness:
+                    best_fitness = current_best.fitness
+                    best_genome = current_best
+                    generations_without_improvement = 0
+                else:
+                    generations_without_improvement += 1
+                
+                # Early stopping
+                if generations_without_improvement >= 8:  # Reduced patience for speed
+                    self.logger.info(f"🛑 {symbol}: Early stopping at generation {generation}")
+                    break
+                
+                if best_fitness >= self.training_config['fitness_threshold']:
+                    self.logger.info(f"🎯 {symbol}: Fitness threshold reached at generation {generation}")
+                    break
+            
+            # Evaluate final performance
+            performance_metrics = self._evaluate_agent_performance(
+                best_genome, config, training_data
+            )
+            
+            # Save trained agent
+            agent_id = self._save_trained_agent(symbol, best_genome, config, 
+                                              performance_metrics, training_data)
+            
+            training_time = time.time() - start_time
+            
+            return TrainingResult(
+                symbol=symbol,
+                success=True,
+                best_fitness=best_fitness,
+                generations_completed=generation + 1,
+                training_time=training_time,
+                agent_id=agent_id,
+                performance_metrics=performance_metrics
+            )
+            
+        except Exception as e:
+            training_time = time.time() - start_time
+            self.logger.error(f"❌ {symbol}: Training failed after {training_time:.1f}s - {str(e)}")
+            
+            return TrainingResult(
+                symbol=symbol,
+                success=False,
+                best_fitness=0,
+                generations_completed=0,
+                training_time=training_time,
+                agent_id="",
+                performance_metrics={},
+                error_message=str(e)
+            )
+    
+    def _create_optimized_neat_config(self, symbol: str, num_features: int) -> neat.Config:
+        """Create optimized NEAT configuration for faster training."""
+        config_text = f"""
+[NEAT]
+fitness_criterion     = max
+fitness_threshold     = {self.training_config['fitness_threshold']}
+pop_size              = 100
+reset_on_extinction   = False
+
+[DefaultGenome]
+activation_default      = relu
+activation_mutate_rate  = 0.05
+activation_options      = relu sigmoid tanh
+aggregation_default     = sum
+aggregation_mutate_rate = 0.0
+aggregation_options     = sum
+bias_init_mean          = 0.0
+bias_init_stdev         = 1.0
+bias_max_value          = 30.0
+bias_min_value          = -30.0
+bias_mutate_power       = 0.5
+bias_mutate_rate        = 0.7
+bias_replace_rate       = 0.1
+compatibility_disjoint_coefficient = 1.0
+compatibility_weight_coefficient   = 0.5
+conn_add_prob           = 0.4
+conn_delete_prob        = 0.2
+enabled_default         = True
+enabled_mutate_rate     = 0.01
+feed_forward            = True
+initial_connection      = full_direct
+node_add_prob           = 0.3
+node_delete_prob        = 0.1
+num_hidden              = 1
+num_inputs              = {num_features}
+num_outputs             = 5
+response_init_mean      = 1.0
+response_init_stdev     = 0.0
+response_max_value      = 30.0
+response_min_value      = -30.0
+response_mutate_power   = 0.0
+response_mutate_rate    = 0.0
+response_replace_rate   = 0.0
+weight_init_mean        = 0.0
+weight_init_stdev       = 1.0
+weight_max_value        = 30
+weight_min_value        = -30
+weight_mutate_power     = 0.5
+weight_mutate_rate      = 0.8
+weight_replace_rate     = 0.1
+
+[DefaultSpeciesSet]
+compatibility_threshold = 3.0
+
+[DefaultStagnation]
+species_fitness_func = max
+max_stagnation       = 10
+species_elitism      = 2
+
+[DefaultReproduction]
+elitism            = 3
+survival_threshold = 0.3
+"""
+        
+        config_path = f"/tmp/neat_config_opt_{symbol}_{os.getpid()}.txt"
+        with open(config_path, 'w') as f:
+            f.write(config_text)
+        
+        return neat.Config(neat.DefaultGenome, neat.DefaultReproduction,
+                          neat.DefaultSpeciesSet, neat.DefaultStagnation,
+                          config_path)
     
     def run_full_training_pipeline(self, selection_file: str = None) -> Dict:
         """Run complete training pipeline for all selected stocks."""
@@ -668,9 +991,9 @@ survival_threshold = 0.2
 
 
 def run_agent_training():
-    """Run complete agent training pipeline."""
-    print("🚀 NEAT Options System - Agent Training Pipeline")
-    print("=" * 60)
+    """Run complete agent training pipeline with comprehensive evaluation."""
+    print("🚀 NEAT Options System - Comprehensive Agent Training Pipeline")
+    print("=" * 80)
     
     pipeline = AgentTrainingPipeline()
     
@@ -678,28 +1001,30 @@ def run_agent_training():
         # Run full training pipeline
         report = pipeline.run_full_training_pipeline()
         
-        # Display results
-        print(f"\n✅ Training Pipeline Complete!")
-        print(f"📊 Results Summary:")
-        print(f"  Total stocks: {report['total_stocks']}")
-        print(f"  Successful: {report['successful_training']}")
-        print(f"  Failed: {report['failed_training']}")
-        print(f"  Success rate: {report['success_rate']:.1%}")
+        # Extract training results for comprehensive analysis
+        training_results = report.get('training_results', [])
         
-        if 'results_summary' in report:
-            summary = report['results_summary']
-            print(f"  Average accuracy: {summary['avg_accuracy']:.1%}")
-            print(f"  Agents ≥80% accuracy: {summary['agents_above_80_accuracy']}")
+        # Generate comprehensive output with dual tables
+        pipeline.output_generator.print_comprehensive_results(training_results)
         
-        print(f"\n🏆 Top Performing Agents:")
-        successful_agents = sorted(report['successful_agents'], 
-                                 key=lambda x: x['fitness_score'], reverse=True)
+        # Save detailed results to JSON
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        results_filename = f"data/comprehensive_training_results_{timestamp}.json"
+        pipeline.output_generator.save_results_to_json(training_results, results_filename)
         
-        for i, agent in enumerate(successful_agents[:10], 1):
-            print(f"  {i:2d}. {agent['symbol']:6s} | "
-                  f"Fitness: {agent['fitness_score']:6.1f} | "
-                  f"Accuracy: {agent['accuracy']:5.1%} | "
-                  f"Return: {agent['total_return']:6.1%}")
+        # Check performance threshold compliance
+        passed_agents = [r for r in training_results if r.success and r.performance_metrics.get('meets_threshold', False)]
+        total_agents = len([r for r in training_results if r.success])
+        
+        print(f"\n🎯 PERFORMANCE THRESHOLD ANALYSIS")
+        print(f"  Agents meeting 50%+ outperformance: {len(passed_agents)}/{total_agents}")
+        print(f"  Threshold compliance rate: {len(passed_agents)/total_agents:.1%}" if total_agents > 0 else "  No successful agents")
+        
+        if len(passed_agents) == 0:
+            print(f"\n⚠️  WARNING: NO AGENTS MEET 50%+ OUTPERFORMANCE THRESHOLD")
+            print(f"  System requires further optimization for maximum profitability.")
+        else:
+            print(f"\n✅ {len(passed_agents)} agents successfully exceed buy-and-hold by 50%+")
         
         return report
         
