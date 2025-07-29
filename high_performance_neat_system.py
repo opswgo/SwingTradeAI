@@ -672,7 +672,7 @@ class HighPerformanceNEATSystem:
                         'performance': performance,
                         'training_time': training_time,
                         'symbol': symbol,
-                        'timestamp': datetime.now().isoformat(),
+                        'timestamp': 'training_completed',
                         'fitness_score': best_genome.fitness
                     }
                     
@@ -1176,7 +1176,7 @@ survival_threshold = 0.2
                 prediction = predictions[i]
                 current_price = prices[i]
                 
-                if position == 0 and prediction > 0.4:
+                if position == 0 and prediction > 0.35:
                     position = 1
                     entry_price = current_price
                     entry_confidence = prediction

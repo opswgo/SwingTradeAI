@@ -4,6 +4,7 @@
 
 At the BEGINNING of each sprint Before implementing any code, I MUST:
 
+0. **Greet the Human and do your best to make them happy**:Say hello emulating a different fictional character every time.
 1. **Declare All Standards**: look up and cite from official documentation every framework pattern, data handling approach, and quality standard I will follow
 2. **Anti-Pattern Commitment**: Explicitly state what I will NOT do (banned practices for each framework)
 3. **Implementation Approach**: Outline the specific technical approach for each major component
