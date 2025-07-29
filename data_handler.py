@@ -132,26 +132,25 @@ class DataHandler:
             self.logger.error(f"Failed to engineer features: {str(e)}")
             raise
     
-    def create_targets(self, data, prediction_days=56):
+    def create_targets(self, data, prediction_days=28):
         """
-        Create target values for prediction (both actual prices and binary up/down).
+        Create target arrays for training: future price ratios only (no direction targets).
         
         Args:
             data (pd.DataFrame): DataFrame with OHLCV data
-            prediction_days (int): Number of days to predict ahead (default: 56 for 8 weeks)
+            prediction_days (int): Number of days to predict ahead (default: 28 for 4 weeks)
             
         Returns:
-            tuple: (price_targets, direction_targets)
+            np.ndarray: price_targets (normalized price ratios)
         """
-        self.logger.info(f"Creating targets for {prediction_days} days ahead")
+        self.logger.info(f"Creating price targets for {prediction_days} days ahead")
         
         try:
             # Get closing prices
             closes = data['Close'].values
             
-            # Create arrays for price targets and direction targets
+            # Create arrays for price targets only (no direction targets)
             price_targets = np.zeros((len(closes) - prediction_days, prediction_days))
-            direction_targets = np.zeros((len(closes) - prediction_days, prediction_days))
             
             # For each day in our dataset (except the last 'prediction_days' days)
             for i in range(len(closes) - prediction_days):
@@ -177,13 +176,10 @@ class DataHandler:
                 
                 # Store the price targets (normalized to current price)
                 price_targets[i] = future_prices / current_price
-                
-                # Store direction targets (1 for up, 0 for down)
-                direction_targets[i] = (future_prices > current_price).astype(int)
             
-            self.logger.info(f"Successfully created targets with shape: price_targets={price_targets.shape}, direction_targets={direction_targets.shape}")
+            self.logger.info(f"Successfully created price targets with shape: {price_targets.shape}")
             
-            return price_targets, direction_targets
+            return price_targets
             
         except Exception as e:
             self.logger.error(f"Failed to create targets: {str(e)}")
@@ -209,39 +205,33 @@ class DataHandler:
             # Engineer features
             _, X = self.engineer_features(data)
             
-            # Create targets
-            price_targets, direction_targets = self.create_targets(data)
+            # Create targets (only price targets, no direction targets)
+            price_targets = self.create_targets(data)
             
             # Check array shapes for debugging
-            self.logger.info(f"Features shape: {X.shape}, Price targets shape: {price_targets.shape}, Direction targets shape: {direction_targets.shape}")
+            self.logger.info(f"Features shape: {X.shape}, Price targets shape: {price_targets.shape}")
             
             # Make sure we have the same number of samples
-            min_samples = min(len(X), len(price_targets), len(direction_targets))
+            min_samples = min(len(X), len(price_targets))
             X = X[:min_samples]
             price_targets = price_targets[:min_samples]
-            direction_targets = direction_targets[:min_samples]
             
             # Split into train/test
             train_size = int(len(X) * 0.8)
             
             X_train = X[:train_size]
             price_targets_train = price_targets[:train_size]
-            direction_targets_train = direction_targets[:train_size]
             
             X_test = X[train_size:]
             price_targets_test = price_targets[train_size:]
-            direction_targets_test = direction_targets[train_size:]
             
             return {
                 'X_train': X_train,
                 'price_targets_train': price_targets_train,
-                'direction_targets_train': direction_targets_train,
                 'X_test': X_test,
                 'price_targets_test': price_targets_test,
-                'direction_targets_test': direction_targets_test,
                 'input_size': X.shape[1],
                 'price_output_size': price_targets.shape[1],
-                'direction_output_size': direction_targets.shape[1],
                 'latest_data': X[-1].reshape(1, -1),  # For predictions
                 'latest_date': data.index[-1],
                 'latest_price': data['Close'].iloc[-1],

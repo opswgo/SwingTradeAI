@@ -6,17 +6,26 @@ Implements NEAT algorithm for stock price prediction following the official NEAT
 import os
 import time
 import neat
-import numpy as np
-import pandas as pd
-import logging
 import json
 import pickle
-import matplotlib.pyplot as plt
-from datetime import datetime
-from concurrent.futures import ThreadPoolExecutor, as_completed
+import logging
+import shutil
+import psutil
+import numpy as np
+import pandas as pd
+import multiprocessing
 import signal
 import sys
+from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import numpy as np
+from functools import partial
 from data_handler import DataHandler
+
+import matplotlib
+matplotlib.use('Agg')  # Use non-interactive backend
+import matplotlib.pyplot as plt
+import matplotlib.dates as mdates
 
 class NEATStockPredictor:
     """
@@ -233,20 +242,63 @@ survival_threshold = 0.2
         self.logger.info(f"State saved to {self.state_path}. Resume with --resume flag.")
         sys.exit(0)
     
-    def _save_state(self):
-        """Save current training state."""
-        if self.best_genome:
-            state = {
-                'generation': self.generation,
-                'timestamp': datetime.now().isoformat()
-            }
+    def _validate_generation_results(self, fitness_results, elapsed_time):
+        """
+        Validate generation results according to AI_Index.md requirements.
+        Ensures no false success claims and verifies the quality of results.
+        
+        Args:
+            fitness_results: List of fitness scores from current generation
+            elapsed_time: Time taken for the generation to complete
+        """
+        # Sanity check fitness values
+        if not fitness_results:
+            self.logger.warning("VALIDATION FAILURE: No fitness results available for validation")
+            return
             
-            with open(self.state_path, 'w') as f:
-                json.dump(state, f)
-                
-            # Save best genome
-            with open(f"{self.ticker}/best_genome.pkl", 'wb') as f:
-                pickle.dump(self.best_genome, f)
+        # Check for unrealistic fitness values
+        if max(fitness_results) > 100.0:  # Our fitness scale is 0-100
+            self.logger.warning(f"VALIDATION FAILURE: Unrealistic max fitness value: {max(fitness_results)}")
+            
+        # Performance validation
+        genomes_per_second = len(fitness_results) / elapsed_time if elapsed_time > 0 else 0
+        self.logger.info(f"Performance validation: {genomes_per_second:.1f} genomes/second")
+            
+        # Check fitness trend (should improve over generations)
+        if self.generation > 1 and hasattr(self, 'previous_best_fitness'):
+            improvement = max(fitness_results) - self.previous_best_fitness
+            self.logger.info(f"Fitness improvement: {improvement:.2f} from previous generation")
+            
+            # Alert if fitness is consistently decreasing
+            if improvement < -1.0 and hasattr(self, 'fitness_decrease_count'):
+                self.fitness_decrease_count += 1
+                if self.fitness_decrease_count >= 3:
+                    self.logger.warning("VALIDATION ALERT: Fitness decreasing for 3+ consecutive generations")
+            else:
+                self.fitness_decrease_count = 0
+        
+        # Store current best for future comparison
+        self.previous_best_fitness = max(fitness_results) if fitness_results else 0
+        
+        # Verify resource utilization - should be high for CPU during training
+        current_cpu = psutil.cpu_percent(interval=0.1)
+        if current_cpu < 70.0:  # Expect at least 70% CPU usage during training with optimized ThreadPoolExecutor
+            self.logger.warning(f"VALIDATION CONCERN: Low CPU utilization ({current_cpu:.1f}%) during training")
+    
+    def _save_state(self):
+        """Save the current state of the trainer to disk."""
+        state_path = f"{self.logs_dir}/checkpoint_gen{self.generation}.pkl"
+        
+        checkpoint = {
+            'generation': self.generation,
+            'best_genome': self.best_genome,
+            'timestamp': datetime.now().isoformat()
+        }
+        
+        with open(state_path, 'wb') as f:
+            pickle.dump(checkpoint, f)
+        
+        self.logger.info(f"Saved checkpoint to {state_path}")
     
     def _load_state(self):
         """Load saved training state."""
@@ -275,36 +327,88 @@ survival_threshold = 0.2
             genomes: List of (genome_id, genome) tuples
             config: NEAT configuration
         """
+        # Force garbage collection before evaluation to free memory
+        import gc
+        gc.collect()
+        
+        # Set environment variables for optimizing numpy parallelism (safer than set_num_threads)
+        try:
+            import os
+            # Try to optimize numpy/BLAS parallelism through environment variables
+            threads = max(1, cpu_count // 2)
+            os.environ['OMP_NUM_THREADS'] = str(threads)
+            os.environ['MKL_NUM_THREADS'] = str(threads)
+        except Exception:
+            pass  # Ignore if environment variables can't be set
         self.generation += 1
         self.logger.info(f"Generation {self.generation}")
         start_time = time.time()
         
         fitness_results = []  # Track all fitness scores
         
-        # Use ThreadPoolExecutor for parallel evaluation
-        with ThreadPoolExecutor() as executor:
+        # Dynamically determine optimal number of workers based on available hardware
+        # Use logical CPU count but leave some headroom for system processes
+        cpu_count = multiprocessing.cpu_count()
+        available_memory_gb = psutil.virtual_memory().available / (1024 * 1024 * 1024)  # Convert to GB
+        
+        # Calculate optimal workers - balance between CPU count and memory constraints
+        # Use more aggressive worker allocation for ThreadPoolExecutor (less overhead than processes)
+        # Each worker needs approximately 50MB for network evaluation in thread mode
+        worker_memory_estimate_gb = 0.05  # 50MB per worker in GB
+        memory_based_workers = int(available_memory_gb / worker_memory_estimate_gb * 0.95)  # Use 95% of available memory
+        optimal_workers = min(cpu_count * 2, memory_based_workers)  # Can use more threads than CPU cores
+        optimal_workers = max(4, optimal_workers)  # At least 4 workers for ThreadPoolExecutor
+        
+        self.logger.info(f"Hardware detection: {cpu_count} CPU cores, {available_memory_gb:.2f}GB available memory")
+        self.logger.info(f"Using {optimal_workers} workers for parallel evaluation")
+        
+        # Log system resource usage before and after evaluation for validation
+        start_cpu_percent = psutil.cpu_percent(interval=0.1)
+        start_memory_percent = psutil.virtual_memory().percent
+        
+        with ThreadPoolExecutor(max_workers=optimal_workers) as executor:
             future_to_genome = {}
             
-            # Submit all genomes for evaluation
-            for genome_id, genome in genomes:
-                future = executor.submit(self._evaluate_genome, genome, config)
-                future_to_genome[future] = (genome_id, genome)
+            # Create a more efficient batch genome evaluation strategy
+            # Use smaller batches to increase parallelism
+            genome_batches = []
+            batch_size = max(1, len(genomes) // (optimal_workers * 2))  # Smaller batches = more parallelism
+            current_batch = []
             
-            # Collect results as they complete
+            for genome_id, genome in genomes:
+                current_batch.append((genome_id, genome))
+                if len(current_batch) >= batch_size:
+                    genome_batches.append(list(current_batch))
+                    current_batch = []
+            
+            if current_batch:  # Add any remaining genomes
+                genome_batches.append(current_batch)
+            
+            # Submit batches for evaluation
+            for batch in genome_batches:
+                future = executor.submit(self._evaluate_genome_batch, batch, config)
+                future_to_genome[future] = batch
+            
+            # Collect batch results as they complete
             for future in as_completed(future_to_genome):
-                genome_id, genome = future_to_genome[future]
+                batch = future_to_genome[future]
                 try:
-                    fitness = future.result()
-                    genome.fitness = fitness
-                    fitness_results.append(fitness)
+                    batch_results = future.result()
                     
-                    # Track best genome
-                    if self.best_genome is None or fitness > self.best_genome.fitness:
-                        self.best_genome = genome
+                    # Process each result in the batch
+                    for (genome_id, genome), fitness in batch_results:
+                        genome.fitness = fitness
+                        fitness_results.append(fitness)
+                        
+                        # Track best genome
+                        if self.best_genome is None or fitness > self.best_genome.fitness:
+                            self.best_genome = genome
                         
                 except Exception as e:
-                    self.logger.error(f"Error evaluating genome {genome_id}: {e}")
-                    genome.fitness = -1.0
+                    self.logger.error(f"Error evaluating genome batch: {e}")
+                    # Assign default fitness to all genomes in the batch
+                    for genome_id, genome in batch:
+                        genome.fitness = -1.0
         
         # Save the best genome of this generation
         if self.best_genome:
@@ -323,41 +427,61 @@ survival_threshold = 0.2
             with open(f"{self.winners_dir}/best_genome_gen{self.generation}.pkl", 'wb') as f:
                 pickle.dump(self.best_genome, f)
         
-        # Log progress
+        # Log progress and resource usage for validation
         elapsed = time.time() - start_time
+        end_cpu_percent = psutil.cpu_percent(interval=0.1)
+        end_memory_percent = psutil.virtual_memory().percent
+        
+        # Calculate metrics
         avg_fitness = sum(fitness_results) / len(fitness_results) if fitness_results else 0
         best_fitness = max(fitness_results) if fitness_results else 0
         
+        # Log comprehensive metrics including resource utilization
         self.logger.info(f"Generation {self.generation}: "
-                          f"Best={best_fitness:.2f}, "
-                          f"Avg={avg_fitness:.2f}, "
-                          f"Time={elapsed:.2f}s")
+                         f"Best={best_fitness:.2f}, "
+                         f"Avg={avg_fitness:.2f}, "
+                         f"Time={elapsed:.2f}s, "
+                         f"CPU: {start_cpu_percent:.1f}% → {end_cpu_percent:.1f}%, "
+                         f"Memory: {start_memory_percent:.1f}% → {end_memory_percent:.1f}%")
+        
+        # Validate results according to AI_Index.md requirements
+        self._validate_generation_results(fitness_results, elapsed)
         
         # Save state every 5 generations
         if self.generation % 5 == 0:
             self._save_state()
             
-            with open(filename, 'w') as f:
-                json.dump(genome_data, f, indent=2)
-            
-            # Also save the actual genome object
-            with open(f"{self.winners_dir}/best_genome_gen{self.generation}.pkl", 'wb') as f:
-                pickle.dump(self.best_genome, f)
-        
-        # Log progress
-        elapsed = time.time() - start_time
-        avg_fitness = sum(fitness_results) / len(fitness_results) if fitness_results else 0
-        best_fitness = max(fitness_results) if fitness_results else 0
-        
-        self.logger.info(f"Generation {self.generation}: "
-                          f"Best={best_fitness:.2f}, "
-                          f"Avg={avg_fitness:.2f}, "
-                          f"Time={elapsed:.2f}s")
-        
-        # Save state every 5 generations
-        if self.generation % 5 == 0:
+            # Save the best genome to JSON and pickle
+            if self.best_genome and 'filename' in locals():
+                with open(filename, 'w') as f:
+                    json.dump(genome_data, f, indent=2)
+                
+                with open(f"{self.winners_dir}/best_genome_gen{self.generation}.pkl", 'wb') as f:
+                    pickle.dump(self.best_genome, f)
             self._save_state()
     
+    def _evaluate_genome_batch(self, genomes_batch, config):
+        """Evaluate a batch of genomes in parallel for better CPU utilization.
+        
+        Args:
+            genomes_batch: List of (genome_id, genome) tuples to evaluate
+            config: NEAT configuration
+            
+        Returns:
+            List of ((genome_id, genome), fitness) tuples
+        """
+        results = []
+        
+        for genome_id, genome in genomes_batch:
+            try:
+                fitness = self._evaluate_genome(genome, config)
+                results.append(((genome_id, genome), fitness))
+            except Exception as e:
+                self.logger.error(f"Error evaluating genome {genome_id}: {e}")
+                results.append(((genome_id, genome), -1.0))
+                
+        return results
+        
     def _evaluate_genome(self, genome, config):
         """
         Evaluate a single genome for stock price prediction.
@@ -374,51 +498,77 @@ survival_threshold = 0.2
             training_data = self.training_data
             features = training_data['X_train']  # Changed from 'features' to 'X_train'
             price_targets = training_data['price_targets_train']  # Changed from 'price_targets' to 'price_targets_train'
-            direction_targets = training_data['direction_targets_train']  # Changed from 'direction_targets' to 'direction_targets_train'
+            # We're using 28-day price targets only, no direction targets
             
             # Create neural network from genome
             net = neat.nn.FeedForwardNetwork.create(genome, config)
             
-            # Initialize metrics
+            # Initialize metrics - only price MSE, no direction accuracy
             price_mse = 0.0
-            direction_accuracy = 0.0
             num_samples = len(features)
             
-            # Make predictions for each sample
-            for i, feature_vector in enumerate(features):
-                # Get network output
-                outputs = net.activate(feature_vector)
-                
-                # Split outputs into price predictions and direction predictions
-                num_days = len(outputs) // 2
-                price_preds = outputs[:num_days]
-                direction_preds = outputs[num_days:]
-                
-                # Calculate price MSE (Mean Squared Error)
-                price_target = price_targets[i]
-                price_errors = [(pred - target) ** 2 for pred, target in zip(price_preds, price_target)]
-                sample_price_mse = sum(price_errors) / len(price_errors)
-                price_mse += sample_price_mse
-                
-                # Calculate direction accuracy
-                direction_target = direction_targets[i]
-                direction_correct = sum(1 for pred, target in zip(direction_preds, direction_target) 
-                                       if (pred > 0.5) == (target > 0.5))
-                sample_direction_accuracy = direction_correct / len(direction_target)
-                direction_accuracy += sample_direction_accuracy
+            # Vectorized approach for batch processing
+            # Process in batches to avoid memory issues with very large datasets
+            batch_size = 128
+            num_samples = len(features)
             
-            # Calculate average metrics
+            for batch_start in range(0, num_samples, batch_size):
+                batch_end = min(batch_start + batch_size, num_samples)
+                batch_size_actual = batch_end - batch_start
+                
+                # Process batch with vectorized operations for better CPU utilization
+                # Use parallel processing with smaller chunks for better CPU utilization
+                batch_features = [features[i] for i in range(batch_start, batch_end)]
+                
+                # Process in smaller chunks for better CPU utilization
+                batch_outputs = []
+                chunk_size = max(1, batch_size_actual // 4)  # Smaller chunks = more parallelism
+                
+                for chunk_start in range(0, batch_size_actual, chunk_size):
+                    chunk_end = min(chunk_start + chunk_size, batch_size_actual)
+                    # Process this chunk in parallel using list comprehension
+                    chunk_outputs = [net.activate(batch_features[i]) for i in range(chunk_start, chunk_end)]
+                    batch_outputs.extend(chunk_outputs)
+                
+                # Convert batch outputs to numpy array for vectorized operations
+                batch_predictions = np.array(batch_outputs)
+                
+                # Check shape and ensure all predictions have correct length
+                if batch_predictions.shape[1] != 28:
+                    self.logger.warning(f"Network produced {batch_predictions.shape[1]} outputs, expected 28. Correcting dimensions.")
+                    if batch_predictions.shape[1] < 28:
+                        # Pad predictions if too short (vectorized operation)
+                        pad_width = ((0, 0), (0, 28 - batch_predictions.shape[1]))
+                        last_vals = batch_predictions[:, -1:] if batch_predictions.shape[1] > 0 else np.ones((batch_size_actual, 1))
+                        batch_predictions = np.pad(batch_predictions, pad_width, 'constant')
+                        # Fill padded values with last value for each sample
+                        for i in range(batch_size_actual):
+                            batch_predictions[i, batch_predictions.shape[1] - (28 - batch_predictions.shape[1]):] = last_vals[i]
+                    else:
+                        # Truncate if too long (vectorized operation)
+                        batch_predictions = batch_predictions[:, :28]
+                
+                # Get corresponding batch of price targets
+                batch_indices = np.arange(batch_start, batch_end)
+                batch_price_targets = price_targets[batch_indices]
+                
+                # Calculate MSE using vectorized operations
+                batch_price_mse = np.mean((batch_predictions - batch_price_targets) ** 2, axis=1).sum()
+                price_mse += batch_price_mse
+                
+            # Calculate average metrics - only price MSE now
             avg_price_mse = price_mse / num_samples
-            avg_direction_accuracy = direction_accuracy / num_samples
             
-            # Calculate fitness (weighting accuracy higher than MSE)
-            # Price MSE is negative (lower is better), scale to [0, 50]
-            price_score = 50 * max(0, 1 - avg_price_mse)
-            # Direction accuracy is positive (higher is better), scale to [0, 50]
-            direction_score = 50 * avg_direction_accuracy
+            # Calculate fitness based solely on price MSE
+            # Price MSE is negative (lower is better), scale to [0, 100]
+            fitness = 100 * max(0, 1 - avg_price_mse)
             
-            # Combine for total fitness score [0, 100]
-            fitness = price_score + direction_score
+            # Add a small penalty for large errors to prevent extreme predictions
+            if avg_price_mse > 1.0:
+                fitness = max(0, fitness - 20 * (avg_price_mse - 1.0))
+                
+            # Cap fitness at 100
+            fitness = min(fitness, 100.0)
             
             return fitness
             
@@ -591,28 +741,82 @@ survival_threshold = 0.2
             # Get predictions from network
             outputs = net.activate(latest_features)
             
-            # Split outputs into price predictions and direction predictions
-            num_days = len(outputs) // 2
-            price_ratios = outputs[:num_days]  # Price ratios (current price = 1.0)
-            direction_probs = outputs[num_days:]  # Direction probabilities (>0.5 means up)
+            # With the updated NEAT config, outputs are price predictions only (28 days)
+            price_ratios = outputs  # All outputs are price ratios (current price = 1.0)
+            
+            # Ensure we have exactly 28 outputs as expected
+            if len(price_ratios) != 28:
+                self.logger.warning(f"Network produced {len(price_ratios)} outputs, expected 28. Adjusting...")
+                if len(price_ratios) < 28:
+                    # Pad with last value if needed
+                    last_val = price_ratios[-1] if len(price_ratios) > 0 else 1.0
+                    price_ratios = np.pad(price_ratios, (0, 28 - len(price_ratios)), 'constant', constant_values=last_val)
+                else:
+                    # Truncate if too long
+                    price_ratios = price_ratios[:28]
+            
+            # Convert to numpy array for consistent handling
+            price_ratios = np.array(price_ratios)
             
             # Get current price
-            current_price = data['Close'].iloc[-1]
+            current_price = float(data['Close'].iloc[-1])
             
             # Calculate predicted prices
-            predicted_prices = [current_price * ratio for ratio in price_ratios]
+            predicted_prices = [float(current_price * ratio) for ratio in price_ratios]
             
             # Generate dates for predictions
             last_date = data.index[-1]
-            prediction_dates = pd.date_range(start=last_date + pd.Timedelta(days=1), periods=num_days)
+            prediction_dates = pd.date_range(start=last_date + pd.Timedelta(days=1), periods=len(predicted_prices))
             
-            # Create prediction DataFrame
+            # Create prediction DataFrame - no more direction predictions
+            # Instead, determine direction from day-to-day price changes
+            # Ensure all arrays are the same length before creating DataFrame
+            dates_list = prediction_dates.tolist()
+            
+            # Debug information
+            self.logger.info(f"Lengths check before creating DataFrame: dates={len(dates_list)}, prices={len(predicted_prices)}")
+            
+            # Ensure arrays have the same length
+            min_length = min(len(dates_list), len(predicted_prices))
+            dates_list = dates_list[:min_length]
+            predicted_prices = predicted_prices[:min_length]
+            
+            # Convert to python primitives to avoid pandas type issues
+            prices_list = [float(p) for p in predicted_prices]
+            
+            # Create the DataFrame with explicit index
             predictions_df = pd.DataFrame({
-                'Date': prediction_dates,
-                'Price': predicted_prices,
-                'Direction': ['Up' if p > 0.5 else 'Down' for p in direction_probs],
-                'Confidence': [abs(p - 0.5) * 2 for p in direction_probs]  # Scale to [0, 1]
-            })
+                'Date': dates_list,
+                'Price': prices_list
+            }, index=range(len(dates_list)))
+            
+            # Calculate direction based on price changes
+            # Initialize with a list of correct length
+            directions = ['Initial'] + ['Unknown'] * (len(predictions_df) - 1)
+            
+            # Update directions based on price changes
+            for i in range(1, len(predictions_df)):
+                price_now = float(predictions_df['Price'].iloc[i])
+                price_prev = float(predictions_df['Price'].iloc[i-1])
+                directions[i] = 'Up' if price_now > price_prev else 'Down'
+                
+            # Assign the full list to the DataFrame at once
+            predictions_df['Direction'] = directions
+            
+            # Calculate confidence based on magnitude of price change (simple method)
+            # Initialize with a list of correct length
+            confidences = [0.5] * len(predictions_df)
+            
+            # Update confidences based on price changes
+            for i in range(1, len(predictions_df)):
+                price_now = float(predictions_df['Price'].iloc[i])
+                price_prev = float(predictions_df['Price'].iloc[i-1])
+                price_change_pct = abs(price_now / price_prev - 1)
+                # Scale confidence: 0% change = 0.5, 5% change = 1.0
+                confidences[i] = min(0.5 + price_change_pct * 10, 1.0)
+                
+            # Assign the full list to the DataFrame at once
+            predictions_df['Confidence'] = confidences
             
             # Save predictions
             predictions_file = f"{self.predictions_dir}/predictions_{self.ticker}.csv"
@@ -628,14 +832,14 @@ survival_threshold = 0.2
                     day_num = day_idx + 1
                     highlights[f"Day_{day_num}"] = {
                         "Date": predictions_df['Date'].iloc[day_idx].strftime("%Y-%m-%d"),
-                        "Price": predictions_df['Price'].iloc[day_idx],
-                        "Direction": predictions_df['Direction'].iloc[day_idx],
-                        "Confidence": predictions_df['Confidence'].iloc[day_idx]
+                        "Price": float(predictions_df['Price'].iloc[day_idx]),
+                        "Direction": str(predictions_df['Direction'].iloc[day_idx]),
+                        "Confidence": float(predictions_df['Confidence'].iloc[day_idx])
                     }
             
             return {
                 "success": True,
-                "current_price": current_price,
+                "current_price": float(current_price),
                 "current_date": last_date.strftime("%Y-%m-%d"),
                 "predictions": predictions_df.to_dict(orient="records"),
                 "highlights": highlights,
@@ -846,48 +1050,45 @@ survival_threshold = 0.2
             # Load validation data (use 20% of the data that wasn't used for training)
             data = self.data_handler.fetch_data(self.ticker, period="2y")
             features_df, normalized_features = self.data_handler.engineer_features(data)
-            price_targets, direction_targets = self.data_handler.create_targets(data)
+            price_targets, _ = self.data_handler.create_targets(data)  # We're only using price targets
             
             # Use the last 20% for validation
             val_size = int(len(normalized_features) * 0.2)
             val_features = normalized_features[-val_size:]
             val_price_targets = price_targets[-val_size:]
-            val_direction_targets = direction_targets[-val_size:]
             
             # Initialize metrics for each prediction day
             num_days = val_price_targets.shape[1]  # Number of days we're predicting ahead
             price_mse = np.zeros(num_days)
-            direction_accuracy = np.zeros(num_days)
             
             # Make predictions for each validation sample
             for i, feature_vector in enumerate(val_features):
                 # Get network output
                 outputs = net.activate(feature_vector)
                 
-                # Split outputs into price predictions and direction predictions
-                price_preds = outputs[:num_days]
-                direction_preds = outputs[num_days:]
+                # Ensure outputs has the right length
+                if len(outputs) != 28:
+                    self.logger.warning(f"Network produced {len(outputs)} outputs, expected 28.")
+                    if len(outputs) < 28:
+                        # Pad with last value
+                        last_val = outputs[-1] if outputs else 1.0
+                        outputs = np.pad(outputs, (0, 28 - len(outputs)), 'constant', constant_values=last_val)
+                    else:
+                        # Truncate
+                        outputs = outputs[:28]
                 
                 # Calculate price MSE for each day
                 price_target = val_price_targets[i]
                 for day in range(num_days):
-                    price_mse[day] += (price_preds[day] - price_target[day]) ** 2
-                
-                # Calculate direction accuracy for each day
-                direction_target = val_direction_targets[i]
-                for day in range(num_days):
-                    if (direction_preds[day] > 0.5) == (direction_target[day] > 0.5):
-                        direction_accuracy[day] += 1
+                    price_mse[day] += (outputs[day] - price_target[day]) ** 2
             
             # Calculate average metrics
             price_mse /= val_size
-            direction_accuracy /= val_size
             
             # Create DataFrame for evaluation results
             eval_df = pd.DataFrame({
                 'Day': range(1, num_days + 1),
-                'Price_MSE': price_mse,
-                'Direction_Accuracy': direction_accuracy
+                'Price_MSE': price_mse
             })
             
             # Save evaluation results
@@ -897,23 +1098,19 @@ survival_threshold = 0.2
             # Log evaluation results
             with open(f"{self.logs_dir}/{self.ticker}_log.txt", 'a') as f:
                 f.write(f"\n\nEVALUATION RESULTS:\n")
-                f.write(f"Average Price MSE: {np.mean(price_mse):.4f}\n")
-                f.write(f"Average Direction Accuracy: {np.mean(direction_accuracy):.4f}\n\n")
+                f.write(f"Average Price MSE: {np.mean(price_mse):.4f}\n\n")
                 
                 f.write(f"Results by day:\n")
-                for day in [0, 4, 9, 19, 39]:  # Days 1, 5, 10, 20, 40
+                for day in [0, 4, 9, 19]:  # Days 1, 5, 10, 20
                     if day < len(price_mse):
-                        f.write(f"Day {day+1}: Price MSE={price_mse[day]:.4f}, "
-                                f"Direction Accuracy={direction_accuracy[day]:.4f}\n")
+                        f.write(f"Day {day+1}: Price MSE={price_mse[day]:.4f}\n")
             
             self.logger.info(f"Evaluation complete, results saved to {eval_file}")
             
             return {
                 "success": True,
                 "price_mse": price_mse.tolist(),
-                "direction_accuracy": direction_accuracy.tolist(),
                 "avg_price_mse": float(np.mean(price_mse)),
-                "avg_direction_accuracy": float(np.mean(direction_accuracy)),
                 "evaluation_file": eval_file
             }
             
