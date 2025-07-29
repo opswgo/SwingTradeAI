@@ -60,17 +60,17 @@ class HighPerformanceNEATSystem:
         
         # Performance configuration
         self.use_gpu = use_gpu and GPU_AVAILABLE
-        self.max_workers = 1  # Single-threaded for debugging      
+        self.max_workers = min(mp.cpu_count(), 16)  # Use all cores, cap at 16
         self.logger.info(f"🚀 High-Performance NEAT System initialized:")
         self.logger.info(f"   CPU Cores: {mp.cpu_count()}")
         self.logger.info(f"   Worker Processes: {self.max_workers}")
         self.logger.info(f"   GPU Acceleration: {'✅ ENABLED' if self.use_gpu else '❌ DISABLED'}")
         
-        # MINIMAL SETTINGS FOR DEBUGGING - single threaded
-        self.population_size = 5   # Tiny population for debugging
-        self.max_generations = 3   # Just enough to see what's happening
-        self.fitness_threshold = 1000
-        self.min_generations = 50
+        # PRODUCTION SETTINGS - full scale training
+        self.population_size = 150      # Full population for evolution
+        self.max_generations = 50       # Sufficient generations for convergence
+        self.fitness_threshold = 95     # High fitness threshold (near perfect)
+        self.min_generations = 10       # Minimum generations before early stopping
         
         # Aggressive CPU utilization - use ALL available cores
         self.parallel_workers = os.cpu_count()  # Use every CPU core
@@ -434,49 +434,40 @@ class HighPerformanceNEATSystem:
                         position = 0
                         days_in_position = 0
             
-            # Debug trade count for first genome
-            if genome.key == 1:
-                print(f"GENOME {genome.key}: Trading loop complete - total_trades={total_trades}, wins={wins}, losses={losses}")
-            
-            # Calculate fitness metrics with debug info
+            # Calculate fitness metrics
             if total_trades < 5:
-                if genome.key == 1:  # Only debug first genome to avoid spam
-                    entries_count = sum(1 for p in predictions if p > 0.35)  # Use correct threshold
-                    print(f"GENOME {genome.key}: INSUFFICIENT TRADES - Trades={total_trades}, Entries={entries_count}, Threshold=0.35")
                 return -1000  # Insufficient trades for evaluation
-            
-            if genome.key == 1:
-                print(f"GENOME {genome.key}: SUFFICIENT TRADES - Calculating fitness for {total_trades} trades")
             
             win_rate = wins / total_trades
             avg_return_per_trade = np.mean(trades) if len(trades) > 0 else 0
             assignment_rate = assignments / total_trades if total_trades > 0 else 0
-            trades_per_year = 252 / max_position_days  # ~12.6 trades per year
-            annual_return = avg_return_per_trade * trades_per_year
+            # REALISTIC CALCULATION: Proper annualization
+            # Calculate actual trading frequency based on data
+            trading_days = len(predictions)
+            years_of_data = trading_days / 252
+            actual_trades_per_year = total_trades / years_of_data if years_of_data > 0 else 0
             
-            if genome.key == 1:
-                print(f"GENOME {genome.key}: win_rate={win_rate:.3f}, avg_return={avg_return_per_trade:.6f}, assignment_rate={assignment_rate:.3f}")
-                print(f"GENOME {genome.key}: annual_return={annual_return:.6f}, trades_per_year={trades_per_year:.1f}")
-                print(f"GENOME {genome.key}: sharpe_ratio={sharpe_ratio:.3f}, max_drawdown={max_drawdown:.3f}")
+            # Annual return based on actual trading frequency
+            annual_return = avg_return_per_trade * actual_trades_per_year
             
-            # Realistic bounds check - cap at 200% annual return
-            annual_return = min(annual_return, 2.0)  # Max 200% annual return
-            annual_return = max(annual_return, -0.5)  # Min -50% annual return
+            # REALISTIC BOUNDS: Cap at reasonable values for options trading
+            annual_return = max(min(annual_return, 1.0), -0.5)  # Cap between -50% and +100%
             
-            # Sharpe ratio with proper handling of low variance
+            # REALISTIC Sharpe ratio calculation
             if len(trades) > 1:
                 trade_std = np.std(trades)
-                if trade_std > 0.001:  # Meaningful variance threshold
-                    sharpe_ratio = np.mean(trades) / trade_std * np.sqrt(252/max_position_days)
-                    # Cap at realistic bounds for trading strategies
-                    sharpe_ratio = min(max(sharpe_ratio, -3), 5)  # Realistic Sharpe range
+                risk_free_daily = 0.04 / 252  # 4% annual risk-free rate
+                
+                if trade_std > 0.005:  # Minimum realistic variance for options trading
+                    excess_return = avg_return_per_trade - risk_free_daily
+                    sharpe_ratio = excess_return / trade_std
+                    # REALISTIC BOUNDS: Even the best hedge funds rarely exceed 3.0 Sharpe
+                    sharpe_ratio = max(min(sharpe_ratio, 3.0), -2.0)
                 else:
-                    # Low variance indicates unrealistic simulation - assign moderate Sharpe
-                    sharpe_ratio = 1.0  # Reasonable default for consistent strategies
-                    if genome.key == 1:
-                        print(f"GENOME {genome.key}: Low variance detected (std={trade_std:.6f}), using default Sharpe=1.0")
+                    # Low variance suggests unrealistic simulation
+                    sharpe_ratio = 0.5  # Conservative default
             else:
-                sharpe_ratio = 0
+                sharpe_ratio = 0.0
             
             # Research-based fitness function optimized for options trading
             # Hierarchical weighting based on options strategy importance
@@ -493,26 +484,30 @@ class HighPerformanceNEATSystem:
             
             # SECONDARY: Win Rate (0-25 points) - Critical for consistent income
             if win_rate >= self.target_win_rate:  # 80%+
-                win_rate_score = 25 * (win_rate - self.target_win_rate) / 0.2
-                win_rate_score = min(win_rate_score, 25)
+                win_rate_score = 25 * min((win_rate - self.target_win_rate) / 0.2, 1.0)
             else:
-                # Non-linear penalty below threshold
+                # Linear penalty below threshold
                 deficit = (self.target_win_rate - win_rate) / self.target_win_rate
-                win_rate_score = -25 * (deficit ** 1.2)
+                win_rate_score = -25 * deficit
             fitness += win_rate_score
             
-            # TERTIARY: Annual Return (0-20 points) - Important but not primary
-            if annual_return >= self.target_annual_return:  # 100%+
-                return_score = 20 * min((annual_return - self.target_annual_return), 1.0)
+            # TERTIARY: Annual Return (0-20 points) - Capped at realistic values
+            # Target is 100% (1.0), but cap scoring at 50% (0.5) to prevent gaming
+            if annual_return >= 0.5:  # 50%+ is excellent for options
+                return_score = 20
+            elif annual_return >= 0:
+                return_score = 20 * (annual_return / 0.5)  # Scale to 50%
             else:
-                return_score = 20 * (annual_return / self.target_annual_return) - 20
+                return_score = 20 * annual_return  # Negative penalty
             fitness += return_score
             
-            # QUATERNARY: Sharpe Ratio (0-20 points) - Risk-adjusted performance
-            if sharpe_ratio >= self.target_sharpe:  # 2.0+
-                sharpe_score = 20 * min((sharpe_ratio - self.target_sharpe) / 3.0, 1.0)
+            # QUATERNARY: Sharpe Ratio (0-20 points) - Capped at realistic values
+            if sharpe_ratio >= 1.5:  # 1.5+ is world-class
+                sharpe_score = 20
+            elif sharpe_ratio >= 0:
+                sharpe_score = 20 * (sharpe_ratio / 1.5)  # Scale to 1.5
             else:
-                sharpe_score = 20 * (sharpe_ratio / self.target_sharpe) - 20
+                sharpe_score = 20 * sharpe_ratio  # Negative penalty
             fitness += sharpe_score
             
             # Bonus/Penalty adjustments (±10 points max)
@@ -527,17 +522,16 @@ class HighPerformanceNEATSystem:
             # Final bounds: fitness should be in range [-50, 100]
             fitness = max(min(fitness, 100), -50)
             
-            if genome.key == 1:
+            # Production mode - minimal debug output
+            if genome.key == 1 and hasattr(self, '_debug_mode') and self._debug_mode:
                 print(f"GENOME {genome.key}: Components - WinRate:{win_rate_score:.1f}, Return:{return_score:.1f}, Assignment:{assignment_score:.1f}, Sharpe:{sharpe_score:.1f}")
-            
-            if genome.key == 1:
                 print(f"GENOME {genome.key}: FINAL FITNESS: {fitness:.2f}")
             
             return fitness
             
         except Exception as e:
-            if genome.key == 1:
-                print(f"GENOME {genome.key}: EXCEPTION in fitness calculation: {e}")
+            # Log exception in production without console spam
+            self.logger.error(f"Fitness calculation error for genome {genome.key}: {e}")
             return -1000
     
     def high_performance_train(self, symbol: str, horizon_weeks: int = 4) -> Dict:
@@ -653,21 +647,29 @@ class HighPerformanceNEATSystem:
                 self.logger.info(f"   Max Drawdown: {performance['max_drawdown']:.1%} (Target: <{self.max_drawdown:.1%})")
                 
                 if meets_standards:
-                    # Save exceptional model
-                    os.makedirs('models', exist_ok=True)
+                    # Save exceptional model with ticker-based organization
                     model_data = {
                         'genome': best_genome,
                         'config': config,
                         'performance': performance,
                         'training_time': training_time,
-                        'symbol': symbol
+                        'symbol': symbol,
+                        'timestamp': datetime.now().isoformat(),
+                        'fitness_score': best_genome.fitness
                     }
                     
-                    with open(f'models/{symbol}_high_performance_model.pkl', 'wb') as f:
-                        pickle.dump(model_data, f)
+                    # Save with ticker-based organization and versioning
+                    model_path = self.save_model_with_versioning(symbol, model_data, performance)
+                    
+                    # Save to database
+                    self.save_model_to_database(symbol, model_data, performance)
+                    
+                    # Generate validation charts for exceptional model
+                    chart_paths = self.generate_validation_charts(best_genome, config, training_data, symbol, performance)
                     
                     self.logger.info(f"🏆 EXCEPTIONAL MODEL ACCEPTED AND SAVED:")
                     self.logger.info(f"   ✅ All standards met for {symbol}")
+                    self.logger.info(f"   📊 Charts generated: {len(chart_paths)} files")
                     
                     return {
                         'success': True,
@@ -675,7 +677,8 @@ class HighPerformanceNEATSystem:
                         'performance': performance,
                         'training_time': training_time,
                         'generations': evaluate_genomes.generation if hasattr(evaluate_genomes, 'generation') else 1,
-                        'speed': (evaluate_genomes.generation if hasattr(evaluate_genomes, 'generation') else 1)/training_time
+                        'speed': (evaluate_genomes.generation if hasattr(evaluate_genomes, 'generation') else 1)/training_time,
+                        'chart_paths': chart_paths
                     }
                 else:
                     self.logger.warning(f"❌ MODEL REJECTED - Performance standards not met")
@@ -692,6 +695,335 @@ class HighPerformanceNEATSystem:
         except Exception as e:
             self.logger.error(f"❌ High-performance training failed: {e}")
             return {'success': False, 'error': str(e)}
+    
+    def generate_validation_charts(self, genome, config, training_data, symbol, performance):
+        """Generate comprehensive validation charts for exceptional models."""
+        import matplotlib.pyplot as plt
+        import matplotlib.dates as mdates
+        from datetime import datetime, timedelta
+        
+        chart_paths = []
+        os.makedirs('charts', exist_ok=True)
+        
+        try:
+            # Create neural network from genome
+            net = neat.nn.FeedForwardNetwork.create(genome, config)
+            
+            # Generate predictions for validation
+            features = training_data['features']
+            prices = training_data['prices']
+            dates = training_data.get('dates', pd.date_range(start='2023-01-01', periods=len(prices), freq='D'))
+            
+            predictions = []
+            for feature_row in features:
+                output = net.activate(feature_row)
+                predictions.append(output[0] if isinstance(output, (list, np.ndarray)) else output)
+            
+            predictions = np.array(predictions)
+            
+            # 1. Predictions vs Actual Price Chart
+            plt.figure(figsize=(15, 10))
+            
+            # Main price chart
+            plt.subplot(3, 1, 1)
+            plt.plot(dates[:len(prices)], prices, 'b-', label='Actual Price', linewidth=2)
+            plt.title(f'{symbol} - NEAT Model Validation (Fitness: {genome.fitness:.1f})', fontsize=16, fontweight='bold')
+            plt.ylabel('Price ($)', fontsize=12)
+            plt.legend()
+            plt.grid(True, alpha=0.3)
+            
+            # Prediction confidence chart
+            plt.subplot(3, 1, 2)
+            plt.plot(dates[:len(predictions)], predictions, 'r-', label='NEAT Predictions', linewidth=2)
+            plt.axhline(y=0.35, color='orange', linestyle='--', label='Entry Threshold (0.35)')
+            plt.axhline(y=0.65, color='green', linestyle='--', label='High Confidence (0.65)')
+            plt.ylabel('Prediction Score', fontsize=12)
+            plt.legend()
+            plt.grid(True, alpha=0.3)
+            
+            # Performance metrics chart
+            plt.subplot(3, 1, 3)
+            metrics = ['Win Rate', 'Annual Return', 'Sharpe Ratio', 'Assignment Rate']
+            values = [performance['win_rate']*100, performance['annual_return']*100, 
+                     performance['sharpe_ratio']*20, performance['assignment_rate']*100]  # Scale for visibility
+            targets = [80, 100, 40, 5]  # Target values scaled
+            
+            x_pos = np.arange(len(metrics))
+            bars = plt.bar(x_pos, values, alpha=0.7, color=['green' if v >= t else 'red' for v, t in zip(values, targets)])
+            plt.bar(x_pos, targets, alpha=0.3, color='blue', label='Targets')
+            
+            plt.xlabel('Performance Metrics', fontsize=12)
+            plt.ylabel('Value (%)', fontsize=12)
+            plt.title('Model Performance vs Targets', fontsize=14)
+            plt.xticks(x_pos, metrics)
+            plt.legend()
+            plt.grid(True, alpha=0.3)
+            
+            # Add value labels on bars
+            for i, (bar, value) in enumerate(zip(bars, values)):
+                if i == 2:  # Sharpe ratio
+                    plt.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 1, 
+                            f'{performance["sharpe_ratio"]:.2f}', ha='center', va='bottom')
+                else:
+                    plt.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 1, 
+                            f'{value:.1f}%', ha='center', va='bottom')
+            
+            plt.tight_layout()
+            chart_path = f'charts/{symbol}_validation_comprehensive.png'
+            plt.savefig(chart_path, dpi=300, bbox_inches='tight')
+            plt.close()
+            chart_paths.append(chart_path)
+            
+            # 2. Trading Simulation Chart
+            plt.figure(figsize=(15, 8))
+            
+            # Simulate trading for visualization
+            portfolio_value = [10000]  # Starting with $10k
+            position = 0
+            trades = []
+            
+            for i in range(len(predictions)-1):
+                pred = predictions[i]
+                current_price = prices[i]
+                
+                if pred > 0.35 and position == 0:  # Enter position
+                    position = 1
+                    entry_price = current_price
+                    entry_date = dates[i]
+                elif position == 1:  # In position
+                    if i == len(predictions)-2 or pred < 0.2:  # Exit position
+                        exit_price = prices[i+1] if i < len(prices)-1 else prices[i]
+                        exit_date = dates[i+1] if i < len(dates)-1 else dates[i]
+                        
+                        # Calculate return (cash-secured put simulation)
+                        trade_return = 0.015 if exit_price >= entry_price * 0.95 else -0.05  # 1.5% premium or 5% loss
+                        portfolio_value.append(portfolio_value[-1] * (1 + trade_return))
+                        
+                        trades.append({
+                            'entry_date': entry_date,
+                            'exit_date': exit_date,
+                            'entry_price': entry_price,
+                            'exit_price': exit_price,
+                            'return': trade_return
+                        })
+                        position = 0
+                    else:
+                        portfolio_value.append(portfolio_value[-1])  # No change
+                else:
+                    portfolio_value.append(portfolio_value[-1])  # No position
+            
+            # Plot portfolio performance
+            portfolio_dates = dates[:len(portfolio_value)]
+            plt.plot(portfolio_dates, portfolio_value, 'g-', linewidth=3, label='NEAT Strategy Portfolio')
+            
+            # Add buy-and-hold comparison
+            if len(prices) > 0:
+                buy_hold_value = [10000 * (prices[i] / prices[0]) for i in range(len(prices))]
+                plt.plot(dates[:len(buy_hold_value)], buy_hold_value, 'b--', linewidth=2, label='Buy & Hold')
+            
+            plt.title(f'{symbol} - Portfolio Performance Comparison', fontsize=16, fontweight='bold')
+            plt.xlabel('Date', fontsize=12)
+            plt.ylabel('Portfolio Value ($)', fontsize=12)
+            plt.legend()
+            plt.grid(True, alpha=0.3)
+            
+            # Format x-axis
+            plt.gca().xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m'))
+            plt.gca().xaxis.set_major_locator(mdates.MonthLocator(interval=2))
+            plt.xticks(rotation=45)
+            
+            plt.tight_layout()
+            chart_path = f'charts/{symbol}_portfolio_performance.png'
+            plt.savefig(chart_path, dpi=300, bbox_inches='tight')
+            plt.close()
+            chart_paths.append(chart_path)
+            
+            # 3. Trade Analysis Chart
+            if trades:
+                plt.figure(figsize=(12, 6))
+                
+                trade_returns = [t['return'] for t in trades]
+                cumulative_returns = np.cumprod([1 + r for r in trade_returns])
+                
+                plt.subplot(1, 2, 1)
+                plt.hist(trade_returns, bins=20, alpha=0.7, color='green', edgecolor='black')
+                plt.axvline(x=0, color='red', linestyle='--', label='Break-even')
+                plt.xlabel('Trade Return')
+                plt.ylabel('Frequency')
+                plt.title('Trade Return Distribution')
+                plt.legend()
+                plt.grid(True, alpha=0.3)
+                
+                plt.subplot(1, 2, 2)
+                plt.plot(range(1, len(cumulative_returns)+1), cumulative_returns, 'g-', linewidth=2)
+                plt.xlabel('Trade Number')
+                plt.ylabel('Cumulative Return')
+                plt.title('Cumulative Trade Performance')
+                plt.grid(True, alpha=0.3)
+                
+                plt.tight_layout()
+                chart_path = f'charts/{symbol}_trade_analysis.png'
+                plt.savefig(chart_path, dpi=300, bbox_inches='tight')
+                plt.close()
+                chart_paths.append(chart_path)
+            
+            self.logger.info(f"📊 Generated {len(chart_paths)} validation charts for {symbol}")
+            return chart_paths
+            
+        except Exception as e:
+            self.logger.error(f"Chart generation failed: {e}")
+            return []
+    
+    def save_model_to_database(self, symbol, model_data, performance):
+        """Save exceptional model to database with full metadata."""
+        try:
+            import sqlite3
+            from datetime import datetime
+            
+            # Create database connection
+            db_path = 'models/exceptional_models.db'
+            os.makedirs('models', exist_ok=True)
+            
+            conn = sqlite3.connect(db_path)
+            cursor = conn.cursor()
+            
+            # Create table if not exists
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS exceptional_models (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    symbol TEXT NOT NULL,
+                    fitness_score REAL NOT NULL,
+                    win_rate REAL NOT NULL,
+                    annual_return REAL NOT NULL,
+                    sharpe_ratio REAL NOT NULL,
+                    assignment_rate REAL NOT NULL,
+                    max_drawdown REAL NOT NULL,
+                    training_time REAL NOT NULL,
+                    timestamp TEXT NOT NULL,
+                    model_path TEXT NOT NULL,
+                    chart_paths TEXT,
+                    genome_size TEXT,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            
+            # Insert model record
+            cursor.execute('''
+                INSERT INTO exceptional_models (
+                    symbol, fitness_score, win_rate, annual_return, sharpe_ratio,
+                    assignment_rate, max_drawdown, training_time, timestamp,
+                    model_path, genome_size
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (
+                symbol,
+                model_data['fitness_score'],
+                performance['win_rate'],
+                performance['annual_return'],
+                performance['sharpe_ratio'],
+                performance['assignment_rate'],
+                performance['max_drawdown'],
+                model_data['training_time'],
+                model_data['timestamp'],
+                f'models/{symbol}_high_performance_model.pkl',
+                f"({model_data['genome'].size[0]}, {model_data['genome'].size[1]})" if hasattr(model_data['genome'], 'size') else 'Unknown'
+            ))
+            
+            conn.commit()
+            conn.close()
+            
+            self.logger.info(f"💾 Exceptional model for {symbol} saved to database")
+            
+        except Exception as e:
+            self.logger.error(f"Database save failed: {e}")
+    
+    def save_model_with_versioning(self, symbol, model_data, performance):
+        """Save model with ticker-based organization and versioning."""
+        import shutil
+        from datetime import datetime
+        
+        try:
+            # Create ticker-specific directory
+            ticker_dir = f'models/{symbol}'
+            os.makedirs(ticker_dir, exist_ok=True)
+            
+            # Check for existing model
+            current_model_path = f'{ticker_dir}/current_model.pkl'
+            archive_dir = f'{ticker_dir}/archive'
+            
+            # If current model exists, compare performance
+            should_replace = True
+            if os.path.exists(current_model_path):
+                try:
+                    with open(current_model_path, 'rb') as f:
+                        existing_model = pickle.load(f)
+                    
+                    existing_perf = existing_model.get('performance', {})
+                    
+                    # Compare key metrics (prioritize win rate, then return, then Sharpe)
+                    new_score = (
+                        performance.get('win_rate', 0) * 0.4 +
+                        min(performance.get('annual_return', 0), 2.0) * 0.3 +  # Cap at 200%
+                        min(performance.get('sharpe_ratio', 0), 5.0) * 0.2 +   # Cap at 5.0
+                        (1 - performance.get('assignment_rate', 1)) * 0.1
+                    )
+                    
+                    existing_score = (
+                        existing_perf.get('win_rate', 0) * 0.4 +
+                        min(existing_perf.get('annual_return', 0), 2.0) * 0.3 +
+                        min(existing_perf.get('sharpe_ratio', 0), 5.0) * 0.2 +
+                        (1 - existing_perf.get('assignment_rate', 1)) * 0.1
+                    )
+                    
+                    if new_score <= existing_score:
+                        should_replace = False
+                        self.logger.info(f"🔄 New model for {symbol} does not outperform existing model")
+                        self.logger.info(f"   Existing Score: {existing_score:.3f}, New Score: {new_score:.3f}")
+                        return current_model_path
+                    else:
+                        # Archive existing model
+                        os.makedirs(archive_dir, exist_ok=True)
+                        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+                        archive_path = f'{archive_dir}/model_{timestamp}.pkl'
+                        shutil.copy2(current_model_path, archive_path)
+                        
+                        self.logger.info(f"📦 Archived previous model to {archive_path}")
+                        self.logger.info(f"🔄 New model outperforms existing: {new_score:.3f} > {existing_score:.3f}")
+                        
+                except Exception as e:
+                    self.logger.warning(f"Could not compare with existing model: {e}")
+            
+            if should_replace:
+                # Save new model as current
+                with open(current_model_path, 'wb') as f:
+                    pickle.dump(model_data, f)
+                
+                # Save metadata
+                metadata = {
+                    'symbol': symbol,
+                    'timestamp': model_data['timestamp'],
+                    'fitness_score': model_data['fitness_score'],
+                    'performance': performance,
+                    'training_time': model_data['training_time'],
+                    'model_path': current_model_path
+                }
+                
+                metadata_path = f'{ticker_dir}/metadata.json'
+                import json
+                with open(metadata_path, 'w') as f:
+                    json.dump(metadata, f, indent=2, default=str)
+                
+                self.logger.info(f"💾 Saved new model for {symbol} to {current_model_path}")
+                self.logger.info(f"📊 Model metadata saved to {metadata_path}")
+                
+                return current_model_path
+            
+        except Exception as e:
+            self.logger.error(f"Model versioning failed: {e}")
+            # Fallback to simple save
+            fallback_path = f'models/{symbol}_model.pkl'
+            with open(fallback_path, 'wb') as f:
+                pickle.dump(model_data, f)
+            return fallback_path
     
     def create_options_labels(self, data: pd.DataFrame, horizon_weeks: int = 4) -> np.ndarray:
         """Optimized options label creation."""

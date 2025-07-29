@@ -121,6 +121,24 @@ population.run(fitness_function, max_generations)
 - All promises must be backed by working demonstrations
 - User time is valuable - no wasted iterations on broken approaches
 
+## OUTCOME VALIDATION REQUIREMENTS
+
+**MANDATORY TERMINAL RESULT CHECKING:**
+- ALWAYS check terminal output after running any command or script
+- Look for errors, warnings, exceptions, and unexpected behavior
+- Verify that claimed "success" actually matches terminal reality
+- If terminal shows errors/warnings, address them immediately
+- Never claim completion without validating terminal output
+- Pay special attention to "Unknown error" messages and trace their source
+
+**VALIDATION CHECKLIST:**
+- [ ] Command completed without errors in terminal
+- [ ] All expected outputs/files were actually created
+- [ ] Performance metrics are realistic and within expected bounds
+- [ ] No "Unknown error" or unhandled exceptions in logs
+- [ ] Database/file operations completed successfully
+- [ ] Charts/reports generated as expected
+
 ## ENFORCEMENT
 
 This document must be referenced and followed for EVERY task. Violations result in:

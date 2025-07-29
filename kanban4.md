@@ -307,3 +307,12 @@ Before starting Sprint 1, add `@deprecated` tags to all broken code:
 - Compare against buy-and-hold benchmark always
 - Focus on real-world trading scenarios
 - Optimize for actual returns, not just accuracy metrics
+
+## BACKLOG ITEMS
+
+### Model Organization & Archiving
+- [ ] **Organize models by ticker**: Save models to `models/<ticker>/` directory structure
+- [ ] **Model versioning**: Archive previous models when better ones are found
+- [ ] **Model metadata tracking**: Performance history, training dates, fitness evolution
+- [ ] **Automatic model comparison**: Only replace models that demonstrably outperform predecessors
+- [ ] **Model rollback capability**: Restore previous models if new ones underperform in live trading
