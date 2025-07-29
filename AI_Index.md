@@ -72,6 +72,7 @@ population.run(fitness_function, max_generations)
 2. **Working Example First**: Show minimal working example before building full system
 3. **No Excuses Policy**: If deviation from declared standards occurs, immediate stop and restart
 4. **Sprint Standards Compliance**: Self-validate against declared standards before each implementation
+5. **Software Performance**: this is crucial to a good application. Ensure best practices to optimize performance.
 
 ## DATA FABRICATION GUARDRAILS
 
@@ -97,12 +98,22 @@ population.run(fitness_function, max_generations)
 4. **Document Assumptions**: Make all assumptions explicit and verifiable
 
 ### Outcome Validation (MANDATORY)
-1. **Wait for Complete Run**: NEVER report completion until the entire run finishes and outputs are validated
+1. **Wait for Complete Run**: NEVER report completion until the entire run finishes and outputs are validated. This includes checking the logs and the terminal outputs and the database.
 2. **Validate Every Run**: Check actual results, not just execution completion
 3. **No False Success Claims**: If model is rejected, tests fail, or standards not met, it is NOT success
 4. **Report Real Outcomes**: State what the system actually solved/achieved, not what it attempted
 5. **Clear Problem Definition**: Always specify what problem is being solved (price prediction, up/down classification, etc.) and for which equity
 6. **Full Output Review**: Read and analyze complete output before claiming any results
+7. **Math Verification**: Always verify calculations and check for unrealistic results (e.g., 7M% returns)
+
+### Model Validation Requirements (MANDATORY)
+1. **Actuals vs Predictions Charts**: Generate charts showing actual vs predicted for correction, bull, and crash market periods. Plot actuals and predictions on the same chart on the same axes. Model confidence should be plotted around the prediction line with a confidence band. Prediction accuracy will be its own chart. Ensure predicted pricing date being plotted is meaningful. Sometimes it's a straight line and that is incorrect.
+2. **Confidence Shading**: Add confidence bands/shading to all prediction charts
+3. **Database Storage**: Save all winning models and their parent genomes to database
+4. **Model Change Review**: Any time model architecture changes, generate actuals vs predictions for user review
+5. **Market Period Analysis**: Test models across different market conditions (correction, bull, crash)
+6. **Performance Verification**: Validate all performance metrics with real market data
+7. **Model Validation**: Validate all models against real market data
 
 ### Quality Gates
 - Code must work on first deployment
