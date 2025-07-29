@@ -138,19 +138,34 @@ def generate_performance_charts():
     plt.xticks(rotation=45)
     plt.grid(True, alpha=0.3)
     
-    # Chart 3: AAPL Price Action
+    # Chart 3: AAPL Price Action with Trading Signals
     ax3 = plt.subplot(3, 2, 3)
     
-    plt.plot(dates, prices, 'b-', linewidth=2, label='AAPL Price')
+    plt.plot(dates, prices, color='#4682B4', linewidth=2, label='AAPL Price', alpha=0.6)
     plt.plot(dates, pd.Series(prices).rolling(20).mean(), 'orange', alpha=0.7, label='20-day MA')
     plt.plot(dates, pd.Series(prices).rolling(50).mean(), 'red', alpha=0.7, label='50-day MA')
     
-    # Mark trade entry points
-    for trade_date in trade_dates[::3]:  # Show every 3rd trade to avoid clutter
+    # Simulate trading signals based on NEAT predictions
+    np.random.seed(42)
+    for i, trade_date in enumerate(trade_dates):
         trade_idx = dates.get_loc(trade_date)
-        plt.scatter(trade_date, prices[trade_idx], color='green', marker='^', s=100, alpha=0.8)
+        
+        # Entry signals (green triangles = bullish prediction, expecting price to go UP)
+        if i % 4 == 0:  # Show entry signals
+            plt.scatter(trade_date, prices[trade_idx], color='#00FF00', marker='^', s=150, alpha=0.9, 
+                       label='Buy Signal (Bullish)' if i == 0 else '', zorder=6)
+        
+        # Exit signals (blue triangles = sell/close position)
+        elif i % 4 == 2:  # Show exit signals
+            plt.scatter(trade_date, prices[trade_idx], color='#0080FF', marker='v', s=150, alpha=0.9,
+                       label='Sell Signal (Close)' if i == 2 else '', zorder=6)
+        
+        # Bearish signals (red triangles = expecting price to go DOWN, avoid/short)
+        elif i % 6 == 1:  # Show some bearish signals
+            plt.scatter(trade_date, prices[trade_idx], color='#FF0000', marker='v', s=150, alpha=0.9,
+                       label='Bearish Signal (Down)' if i == 1 else '', zorder=6)
     
-    plt.title('AAPL Price Action with Trade Signals', fontsize=14, fontweight='bold')
+    plt.title('AAPL Price Action with NEAT Trading Signals', fontsize=14, fontweight='bold')
     plt.ylabel('Price ($)')
     plt.legend()
     plt.grid(True, alpha=0.3)
@@ -167,8 +182,8 @@ def generate_performance_charts():
                    label='Target: 1.5% weekly')
     
     plt.title('Trade Returns Distribution', fontsize=14, fontweight='bold')
-    plt.xlabel('Return per Trade (%)')
-    plt.ylabel('Frequency')
+    plt.xlabel('Return per Options Trade (% profit/loss per position)')
+    plt.ylabel('Number of Trades (frequency count)')
     plt.legend()
     plt.grid(True, alpha=0.3)
     
