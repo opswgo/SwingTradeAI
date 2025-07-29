@@ -58,6 +58,8 @@ def main():
                         help='Skip training and only generate predictions')
     parser.add_argument('--evaluate', action='store_true',
                         help='Evaluate model on validation data')
+    parser.add_argument('--workers', type=int, default=None,
+                        help='Number of parallel workers to use (default: auto-detect)')
     args = parser.parse_args()
     
     logger.info(f"Starting NEAT Stock Price Predictor for {args.ticker}")
@@ -66,7 +68,7 @@ def main():
     
     try:
         # Initialize predictor
-        predictor = NEATStockPredictor(ticker=args.ticker)
+        predictor = NEATStockPredictor(ticker=args.ticker, config_path=None, num_workers=args.workers)
         
         # Train model (if not predict-only)
         if not args.predict_only:

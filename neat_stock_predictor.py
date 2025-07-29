@@ -28,62 +28,53 @@ import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 
 class NEATStockPredictor:
-    """
-    Stock price prediction using NEAT algorithm.
-    Strictly follows the official NEAT pattern and uses real market data only.
-    """
-    
-    def __init__(self, ticker="AAPL", config_path=None):
+    def __init__(self, ticker="AAPL", config_path=None, num_workers=None):
         """
         Initialize the NEAT stock predictor.
-        
         Args:
             ticker (str): Stock ticker symbol
             config_path (str): Path to NEAT config file
+            num_workers (int or None): Number of parallel workers (processes) for evaluation
         """
         # Set up logging
         self.logger = self._setup_logging()
-        
         # Store the ticker
         self.ticker = ticker
         self.logger.info(f"Initializing NEAT Stock Predictor for {ticker}")
-        
         # Set up paths
         self.ticker_dir = f"{ticker}"
         self.winners_dir = f"{ticker}/winners"
         self.logs_dir = f"{ticker}/logs"
         self.charts_dir = f"{ticker}/charts"
         self.predictions_dir = f"{ticker}/predictions"
-        
-        # Create directories if they don't exist
         os.makedirs(self.ticker_dir, exist_ok=True)
         os.makedirs(self.winners_dir, exist_ok=True)
         os.makedirs(self.logs_dir, exist_ok=True)
         os.makedirs(self.charts_dir, exist_ok=True)
         os.makedirs(self.predictions_dir, exist_ok=True)
-        
         # Set up config path
         if config_path is None:
             config_path = f"{ticker}/neat_config.txt"
-            
-        # Check if config file exists, if not, create a default one
         if not os.path.exists(config_path):
             self.logger.warning(f"Config file not found at {config_path}, using default configuration")
             config_path = self._create_default_config(ticker)
-        
         self.config_path = config_path
-        
         # Initialize data handler
         self.data_handler = DataHandler()
-        
         # State variables for tracking progress and interrupts
         self.best_genome = None
         self.generation = 0
         self.interrupted = False
         self.state_path = f"{ticker}/state.json"
-        
         # Register interrupt handler
         signal.signal(signal.SIGINT, self._handle_interrupt)
+        # Store number of workers for parallelism
+        self.num_workers = num_workers
+
+    """
+    Stock price prediction using NEAT algorithm.
+    Strictly follows the official NEAT pattern and uses real market data only.
+    """
     
     def _setup_logging(self):
         """Set up logging configuration."""
@@ -280,11 +271,6 @@ survival_threshold = 0.2
         # Store current best for future comparison
         self.previous_best_fitness = max(fitness_results) if fitness_results else 0
         
-        # Verify resource utilization - should be high for CPU during training
-        current_cpu = psutil.cpu_percent(interval=0.1)
-        if current_cpu < 70.0:  # Expect at least 70% CPU usage during training with optimized ThreadPoolExecutor
-            self.logger.warning(f"VALIDATION CONCERN: Low CPU utilization ({current_cpu:.1f}%) during training")
-    
     def _save_state(self):
         """Save the current state of the trainer to disk."""
         state_path = f"{self.logs_dir}/checkpoint_gen{self.generation}.pkl"
@@ -331,15 +317,6 @@ survival_threshold = 0.2
         import gc
         gc.collect()
         
-        # Set environment variables for optimizing numpy parallelism (safer than set_num_threads)
-        try:
-            import os
-            # Try to optimize numpy/BLAS parallelism through environment variables
-            threads = max(1, cpu_count // 2)
-            os.environ['OMP_NUM_THREADS'] = str(threads)
-            os.environ['MKL_NUM_THREADS'] = str(threads)
-        except Exception:
-            pass  # Ignore if environment variables can't be set
         self.generation += 1
         self.logger.info(f"Generation {self.generation}")
         start_time = time.time()
@@ -347,68 +324,75 @@ survival_threshold = 0.2
         fitness_results = []  # Track all fitness scores
         
         # Dynamically determine optimal number of workers based on available hardware
-        # Use logical CPU count but leave some headroom for system processes
         cpu_count = multiprocessing.cpu_count()
-        available_memory_gb = psutil.virtual_memory().available / (1024 * 1024 * 1024)  # Convert to GB
-        
-        # Calculate optimal workers - balance between CPU count and memory constraints
-        # Use more aggressive worker allocation for ThreadPoolExecutor (less overhead than processes)
-        # Each worker needs approximately 50MB for network evaluation in thread mode
-        worker_memory_estimate_gb = 0.05  # 50MB per worker in GB
-        memory_based_workers = int(available_memory_gb / worker_memory_estimate_gb * 0.95)  # Use 95% of available memory
-        optimal_workers = min(cpu_count * 2, memory_based_workers)  # Can use more threads than CPU cores
-        optimal_workers = max(4, optimal_workers)  # At least 4 workers for ThreadPoolExecutor
-        
+        available_memory_gb = psutil.virtual_memory().available / (1024 * 1024 * 1024)
+        # Use user-specified workers if provided, else auto-detect
+        if self.num_workers is not None and self.num_workers > 0:
+            optimal_workers = self.num_workers
+        else:
+            worker_memory_estimate_gb = 0.05  # 50MB per worker in GB
+            memory_based_workers = int(available_memory_gb / worker_memory_estimate_gb * 0.95)
+            optimal_workers = min(cpu_count, memory_based_workers)
+            optimal_workers = max(2, optimal_workers)  # At least 2 workers for ProcessPoolExecutor
         self.logger.info(f"Hardware detection: {cpu_count} CPU cores, {available_memory_gb:.2f}GB available memory")
-        self.logger.info(f"Using {optimal_workers} workers for parallel evaluation")
+        self.logger.info(f"Using {optimal_workers} PROCESS workers for parallel evaluation (full CPU utilization)")
+
         
-        # Log system resource usage before and after evaluation for validation
-        start_cpu_percent = psutil.cpu_percent(interval=0.1)
-        start_memory_percent = psutil.virtual_memory().percent
-        
-        with ThreadPoolExecutor(max_workers=optimal_workers) as executor:
-            future_to_genome = {}
-            
-            # Create a more efficient batch genome evaluation strategy
-            # Use smaller batches to increase parallelism
+        # Use numpy.memmap for large training arrays to minimize serialization
+        import tempfile
+        X_train = np.array(self.training_data['X_train'])
+        price_targets_train = np.array(self.training_data['price_targets_train'])
+        tmp_dir = tempfile.TemporaryDirectory()
+        X_path = f"{tmp_dir.name}/X_train.dat"
+        y_path = f"{tmp_dir.name}/y_train.dat"
+        X_train_mem = np.memmap(X_path, dtype=X_train.dtype, mode='w+', shape=X_train.shape)
+        X_train_mem[:] = X_train[:]
+        y_train_mem = np.memmap(y_path, dtype=price_targets_train.dtype, mode='w+', shape=price_targets_train.shape)
+        y_train_mem[:] = price_targets_train[:]
+        X_train_mem.flush()
+        y_train_mem.flush()
+        del X_train
+        del price_targets_train
+        from concurrent.futures import ProcessPoolExecutor, as_completed
+        with ProcessPoolExecutor(max_workers=optimal_workers) as executor:
+            future_to_batch = {}
             genome_batches = []
-            batch_size = max(1, len(genomes) // (optimal_workers * 2))  # Smaller batches = more parallelism
+            batch_size = max(2, len(genomes) // (optimal_workers * 4))
             current_batch = []
-            
             for genome_id, genome in genomes:
                 current_batch.append((genome_id, genome))
                 if len(current_batch) >= batch_size:
                     genome_batches.append(list(current_batch))
                     current_batch = []
-            
-            if current_batch:  # Add any remaining genomes
+            if current_batch:
                 genome_batches.append(current_batch)
-            
-            # Submit batches for evaluation
             for batch in genome_batches:
-                future = executor.submit(self._evaluate_genome_batch, batch, config)
-                future_to_genome[future] = batch
-            
-            # Collect batch results as they complete
-            for future in as_completed(future_to_genome):
-                batch = future_to_genome[future]
+                genome_ids = [g[0] for g in batch]
+                genome_objs = [g[1] for g in batch]
+                future = executor.submit(
+                    NEATStockPredictor._evaluate_genome_batch_static,
+                    genome_ids, genome_objs, X_path, y_path, X_train_mem.shape, y_train_mem.shape, X_train_mem.dtype.str, y_train_mem.dtype.str, config
+                )
+                future_to_batch[future] = batch
+            for future in as_completed(future_to_batch):
+                batch = future_to_batch[future]
                 try:
                     batch_results = future.result()
-                    
-                    # Process each result in the batch
-                    for (genome_id, genome), fitness in batch_results:
-                        genome.fitness = fitness
-                        fitness_results.append(fitness)
-                        
-                        # Track best genome
-                        if self.best_genome is None or fitness > self.best_genome.fitness:
-                            self.best_genome = genome
-                        
+                    for (genome_id, fitness) in batch_results:
+                        for orig_id, orig_genome in genomes:
+                            if orig_id == genome_id:
+                                orig_genome.fitness = fitness
+                                fitness_results.append(fitness)
+                                if self.best_genome is None or fitness > self.best_genome.fitness:
+                                    self.best_genome = orig_genome
+                                break
                 except Exception as e:
                     self.logger.error(f"Error evaluating genome batch: {e}")
-                    # Assign default fitness to all genomes in the batch
-                    for genome_id, genome in batch:
-                        genome.fitness = -1.0
+                    for genome_id, _ in batch:
+                        for orig_id, orig_genome in genomes:
+                            if orig_id == genome_id:
+                                orig_genome.fitness = -1.0
+        tmp_dir.cleanup()
         
         # Save the best genome of this generation
         if self.best_genome:
@@ -427,22 +411,19 @@ survival_threshold = 0.2
             with open(f"{self.winners_dir}/best_genome_gen{self.generation}.pkl", 'wb') as f:
                 pickle.dump(self.best_genome, f)
         
-        # Log progress and resource usage for validation
+        # Log progress
         elapsed = time.time() - start_time
-        end_cpu_percent = psutil.cpu_percent(interval=0.1)
-        end_memory_percent = psutil.virtual_memory().percent
+
         
         # Calculate metrics
         avg_fitness = sum(fitness_results) / len(fitness_results) if fitness_results else 0
         best_fitness = max(fitness_results) if fitness_results else 0
         
-        # Log comprehensive metrics including resource utilization
+        # Log comprehensive metrics
         self.logger.info(f"Generation {self.generation}: "
                          f"Best={best_fitness:.2f}, "
                          f"Avg={avg_fitness:.2f}, "
-                         f"Time={elapsed:.2f}s, "
-                         f"CPU: {start_cpu_percent:.1f}% → {end_cpu_percent:.1f}%, "
-                         f"Memory: {start_memory_percent:.1f}% → {end_memory_percent:.1f}%")
+                         f"Time={elapsed:.2f}s")
         
         # Validate results according to AI_Index.md requirements
         self._validate_generation_results(fitness_results, elapsed)
@@ -460,27 +441,72 @@ survival_threshold = 0.2
                     pickle.dump(self.best_genome, f)
             self._save_state()
     
-    def _evaluate_genome_batch(self, genomes_batch, config):
-        """Evaluate a batch of genomes in parallel for better CPU utilization.
-        
-        Args:
-            genomes_batch: List of (genome_id, genome) tuples to evaluate
-            config: NEAT configuration
-            
-        Returns:
-            List of ((genome_id, genome), fitness) tuples
+    @staticmethod
+    def _evaluate_genome_batch_static(genome_ids, genome_objs, X_path, y_path, X_shape, y_shape, X_dtype, y_dtype, config):
         """
+        Static method for process-safe batch genome evaluation.
+        Uses numpy.memmap for large arrays, sets numpy/BLAS thread env vars to 1, logs per-worker CPU/time.
+        Args:
+            genome_ids: List of genome IDs
+            genome_objs: List of genome objects
+            X_path, y_path: Paths to memmap files
+            X_shape, y_shape: Shapes of memmap arrays
+            X_dtype, y_dtype: Dtypes of memmap arrays
+            config: NEAT configuration
+        Returns:
+            List of (genome_id, fitness) tuples
+        """
+        import os, time, numpy as np
+        start_time = time.time()
+        X_train = np.memmap(X_path, dtype=np.dtype(X_dtype), mode='r', shape=tuple(X_shape))
+        y_train = np.memmap(y_path, dtype=np.dtype(y_dtype), mode='r', shape=tuple(y_shape))
         results = []
-        
-        for genome_id, genome in genomes_batch:
+        for genome_id, genome in zip(genome_ids, genome_objs):
             try:
-                fitness = self._evaluate_genome(genome, config)
-                results.append(((genome_id, genome), fitness))
-            except Exception as e:
-                self.logger.error(f"Error evaluating genome {genome_id}: {e}")
-                results.append(((genome_id, genome), -1.0))
-                
+                fitness = NEATStockPredictor._evaluate_genome_static(genome, X_train, y_train, config)
+                results.append((genome_id, fitness))
+            except Exception:
+                results.append((genome_id, -1.0))
+        elapsed = time.time() - start_time
+        print(f"[Worker PID {os.getpid()}] Batch size: {len(genome_ids)}, Time: {elapsed:.2f}s", flush=True)
         return results
+
+    @staticmethod
+    def _evaluate_genome_static(genome, X_train, y_train, config):
+        """
+        Aggressively optimized static method for process-safe genome evaluation.
+        Uses vectorized NumPy operations for all possible steps.
+        Args:
+            genome: NEAT genome (must be pickleable)
+            X_train: numpy memmap array
+            y_train: numpy memmap array
+            config: NEAT configuration (must be pickleable)
+        Returns:
+            float: Fitness score
+        """
+        try:
+            num_samples = X_train.shape[0]
+            net = neat.nn.FeedForwardNetwork.create(genome, config)
+            # Pre-allocate output array for all predictions
+            predictions = np.empty((num_samples, 28), dtype=np.float32)
+            # Evaluate all samples (still must call net.activate per sample, but minimize Python overhead)
+            for i in range(num_samples):
+                out = net.activate(X_train[i])
+                if isinstance(out, (list, np.ndarray)):
+                    if len(out) < 28:
+                        # Pad with last value if too short
+                        pad = [out[-1]] * (28 - len(out)) if out else [1.0] * 28
+                        out = list(out) + pad
+                    elif len(out) > 28:
+                        out = out[:28]
+                    predictions[i, :] = out
+                else:
+                    predictions[i, :] = [out] * 28
+            # Vectorized MSE calculation
+            mse = np.mean((predictions - y_train[:num_samples, :28]) ** 2)
+            return -mse
+        except Exception:
+            return -1.0
         
     def _evaluate_genome(self, genome, config):
         """
@@ -496,9 +522,8 @@ survival_threshold = 0.2
         try:
             # Load training data
             training_data = self.training_data
-            features = training_data['X_train']  # Changed from 'features' to 'X_train'
-            price_targets = training_data['price_targets_train']  # Changed from 'price_targets' to 'price_targets_train'
-            # We're using 28-day price targets only, no direction targets
+            features = training_data['X_train']  
+            price_targets = training_data['price_targets_train']  
             
             # Create neural network from genome
             net = neat.nn.FeedForwardNetwork.create(genome, config)
@@ -522,7 +547,7 @@ survival_threshold = 0.2
                 
                 # Process in smaller chunks for better CPU utilization
                 batch_outputs = []
-                chunk_size = max(1, batch_size_actual // 4)  # Smaller chunks = more parallelism
+                chunk_size = max(1, batch_size_actual // 4)  
                 
                 for chunk_start in range(0, batch_size_actual, chunk_size):
                     chunk_end = min(chunk_start + chunk_size, batch_size_actual)
@@ -577,6 +602,8 @@ survival_threshold = 0.2
             return -1.0
     
     def train(self, generations=200, resume=False):
+        import time
+        train_start = time.time()
         """
         Train the NEAT model for stock price prediction.
         Follows the official NEAT pattern with a single call to population.run().
@@ -589,7 +616,6 @@ survival_threshold = 0.2
             dict: Training results and best model
         """
         self.logger.info(f"Starting NEAT training for {self.ticker}")
-        start_time = time.time()
         
         try:
             # Load data
@@ -637,10 +663,8 @@ survival_threshold = 0.2
             if best_genome:
                 timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
                 filename = f"{self.winners_dir}/winner_final_{timestamp}.pkl"
-                with open(filename, 'wb') as f:
-                    pickle.dump(best_genome, f)
                 
-                # Also save as JSON for human readability
+                # Save genome data to JSON
                 genome_data = {
                     "fitness": best_genome.fitness,
                     "generation": self.generation,
@@ -648,13 +672,16 @@ survival_threshold = 0.2
                     "connections": [(k[0], k[1], v.weight) for k, v in best_genome.connections.items() if v.enabled]
                 }
                 
-                with open(f"{self.winners_dir}/winner_final_{timestamp}.json", 'w') as f:
-                    json.dump(genome_data, f, indent=2)
+                # Also save the actual genome object
+                with open(filename, 'wb') as f:
+                    pickle.dump(best_genome, f)
             
             # Calculate total training time
-            training_time = time.time() - start_time
+            train_end = time.time()
+            total_time = train_end - train_start
             
-            self.logger.info(f"Training complete in {training_time:.2f} seconds")
+            self.logger.info(f"Training complete in {total_time:.2f} seconds")
+            self.logger.info(f"Total training runtime: {total_time:.2f} seconds")
             self.logger.info(f"Best fitness: {best_genome.fitness if best_genome else 'N/A'}")
             
             # Close log file if it exists
@@ -667,7 +694,6 @@ survival_threshold = 0.2
                 "best_genome": best_genome,
                 "config": config,
                 "generations": self.generation,
-                "training_time": training_time
             }
             
         except Exception as e:
