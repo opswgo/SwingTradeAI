@@ -159,13 +159,29 @@ class DataHandler:
                 future_prices = closes[i+1:i+prediction_days+1]
                 current_price = closes[i]
                 
+                # Make sure future_prices is 1D and has the correct shape
+                if isinstance(future_prices, np.ndarray) and len(future_prices.shape) > 1:
+                    future_prices = future_prices.flatten()
+                
+                # Ensure we have exactly prediction_days elements
+                if len(future_prices) != prediction_days:
+                    self.logger.warning(f"Expected {prediction_days} future prices, got {len(future_prices)}")
+                    # Pad or truncate as needed
+                    if len(future_prices) < prediction_days:
+                        # Pad with the last value
+                        padding = np.full(prediction_days - len(future_prices), future_prices[-1] if len(future_prices) > 0 else current_price)
+                        future_prices = np.concatenate([future_prices, padding])
+                    else:
+                        # Truncate to prediction_days
+                        future_prices = future_prices[:prediction_days]
+                
                 # Store the price targets (normalized to current price)
                 price_targets[i] = future_prices / current_price
                 
                 # Store direction targets (1 for up, 0 for down)
                 direction_targets[i] = (future_prices > current_price).astype(int)
             
-            self.logger.info(f"Successfully created targets with shape: {price_targets.shape}")
+            self.logger.info(f"Successfully created targets with shape: price_targets={price_targets.shape}, direction_targets={direction_targets.shape}")
             
             return price_targets, direction_targets
             
@@ -191,42 +207,48 @@ class DataHandler:
             data = self.fetch_data(ticker, period)
             
             # Engineer features
-            features_df, normalized_features = self.engineer_features(data)
+            _, X = self.engineer_features(data)
             
             # Create targets
             price_targets, direction_targets = self.create_targets(data)
             
-            # Align data (ensure same length for features and targets)
-            min_len = min(len(normalized_features), len(price_targets))
-            aligned_features = normalized_features[:min_len]
-            aligned_price_targets = price_targets[:min_len]
-            aligned_direction_targets = direction_targets[:min_len]
-            aligned_dates = features_df.index[:min_len]
+            # Check array shapes for debugging
+            self.logger.info(f"Features shape: {X.shape}, Price targets shape: {price_targets.shape}, Direction targets shape: {direction_targets.shape}")
             
-            # Create dates for future predictions (for the final prediction)
-            last_date = data.index[-1]
-            future_dates = [last_date + timedelta(days=i) for i in range(1, 57)]  # 56 days (8 weeks)
+            # Make sure we have the same number of samples
+            min_samples = min(len(X), len(price_targets), len(direction_targets))
+            X = X[:min_samples]
+            price_targets = price_targets[:min_samples]
+            direction_targets = direction_targets[:min_samples]
             
-            # Save aligned data
-            os.makedirs(f"{ticker}", exist_ok=True)
-            np.save(f"{ticker}/features.npy", aligned_features)
-            np.save(f"{ticker}/price_targets.npy", aligned_price_targets)
-            np.save(f"{ticker}/direction_targets.npy", aligned_direction_targets)
+            # Split into train/test
+            train_size = int(len(X) * 0.8)
             
-            # Prepare data dictionary
-            result = {
-                'features': aligned_features,
-                'price_targets': aligned_price_targets,
-                'direction_targets': aligned_direction_targets,
-                'dates': aligned_dates,
-                'future_dates': future_dates,
-                'last_price': data['Close'].iloc[-1],
-                'last_date': last_date,
+            X_train = X[:train_size]
+            price_targets_train = price_targets[:train_size]
+            direction_targets_train = direction_targets[:train_size]
+            
+            X_test = X[train_size:]
+            price_targets_test = price_targets[train_size:]
+            direction_targets_test = direction_targets[train_size:]
+            
+            return {
+                'X_train': X_train,
+                'price_targets_train': price_targets_train,
+                'direction_targets_train': direction_targets_train,
+                'X_test': X_test,
+                'price_targets_test': price_targets_test,
+                'direction_targets_test': direction_targets_test,
+                'input_size': X.shape[1],
+                'price_output_size': price_targets.shape[1],
+                'direction_output_size': direction_targets.shape[1],
+                'latest_data': X[-1].reshape(1, -1),  # For predictions
+                'latest_date': data.index[-1],
+                'latest_price': data['Close'].iloc[-1],
                 'data': data
             }
             
-            self.logger.info(f"Successfully prepared dataset with {min_len} samples")
-            return result
+            self.logger.info(f"Successfully prepared dataset with {min_samples} samples")
             
         except Exception as e:
             self.logger.error(f"Failed to prepare data: {str(e)}")
