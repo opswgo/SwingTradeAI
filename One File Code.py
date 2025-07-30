@@ -179,7 +179,7 @@ class SAMBA(nn.Module):
         
         #L = torch.eye(input_ids.size(2)).cuda()-torch.matmul(d1,torch.matmul(ADJ,d2))
 
-        I=torch.eye(input_ids.size(2)).cpu()
+        I = torch.eye(input_ids.size(2), device=input_ids.device)
 
         #L=I-ADJ
 
@@ -1158,27 +1158,33 @@ train_len =  XX.shape[0]-test_len-val_len
 
 
 
-X_test=torch.Tensor.float(XX[:test_len,:,:]).cpu()
+# Set device to MPS (Metal Performance Shaders) if available, otherwise CPU
+device = torch.device('mps' if torch.backends.mps.is_available() else 'cpu')
+print(f"Using device: {device}")
 
+# Convert data to tensors and move to the appropriate device
+X_test = torch.tensor(XX[:test_len, :, :], dtype=torch.float32).to(device)
+Y_test = torch.tensor(YY[:test_len, :, :], dtype=torch.float32).to(device)
 
-Y_test=torch.Tensor.float(YY[:test_len,:,:]).cpu()
+X_val = torch.tensor(XX[test_len:test_len+val_len, :, :], dtype=torch.float32).to(device)
+Y_val = torch.tensor(YY[test_len:test_len+val_len, :, :], dtype=torch.float32).to(device)
 
-X_val=torch.Tensor.float(XX[test_len:test_len+val_len,:,:]).cpu()
-Y_val=torch.Tensor.float(YY[test_len:test_len+val_len,:,:]).cpu()
-
-X_train=torch.Tensor.float(XX[test_len+val_len:,:,:]).cpu()
-Y_train=torch.Tensor.float(YY[test_len+val_len:,:,:]).cpu()
-
-
+X_train = torch.tensor(XX[test_len+val_len:, :, :], dtype=torch.float32).to(device)
+Y_train = torch.tensor(YY[test_len+val_len:, :, :], dtype=torch.float32).to(device)
 
 def data_loader(X, Y, batch_size, shuffle=True, drop_last=True):
-    cuda = False 
-    TensorFloat = torch.FloatTensor
-    TensorFloat = torch.cuda.FloatTensor if cuda else torch.FloatTensor
-    X, Y = TensorFloat(X), TensorFloat(Y)
+    """
+    Create a DataLoader for the given data.
+    Note: Data is already on the correct device, so we don't need to move it here.
+    """
     data = torch.utils.data.TensorDataset(X, Y)
-    dataloader = torch.utils.data.DataLoader(data, batch_size=batch_size,
-                                             shuffle=shuffle, drop_last=drop_last)
+    dataloader = torch.utils.data.DataLoader(
+        data, 
+        batch_size=batch_size,
+        shuffle=shuffle, 
+        drop_last=drop_last,
+        pin_memory=False  # Don't pin memory for MPS
+    )
     return dataloader
 
 train_loader = data_loader(X_train, Y_train, 64, shuffle=False, drop_last=False)
@@ -1313,14 +1319,35 @@ for i in range(5):
 
 
 
-#init model
-    model = SAMBA(ModelArgs(args.get("d_in"),args.get("num_layers"),args.get("num_nodes"),args.get('lag'),args.get('horizon')),args.get('hid'),args.get('lag'),args.get('horizon'),args.get('embed_dim'),args.get("cheb_k"))
-    model = model.cpu()
+# Initialize device
+    device = torch.device('mps' if torch.backends.mps.is_available() else 'cpu')
+    print(f"Using device: {device}")
+    
+    # Initialize model and move to device
+    model = SAMBA(
+        ModelArgs(
+            args.get("d_in"),
+            args.get("num_layers"),
+            args.get("num_nodes"),
+            args.get('lag'),
+            args.get('horizon')
+        ),
+        args.get('hid'),
+        args.get('lag'),
+        args.get('horizon'),
+        args.get('embed_dim'),
+        args.get("cheb_k")
+    ).to(device)
+    
+    # Initialize weights
     for p in model.parameters():
         if p.dim() > 1:
             nn.init.xavier_uniform_(p)
         else:
-            nn.init.uniform_(p)
+            nn.init.constant_(p, 0.1)
+    
+    # Make sure all parameters are on the correct device
+    model = model.to(device)
     print_model_parameters(model, only_num=False)
 
     if args.get('loss_func') == 'mask_mae':
