@@ -2,6 +2,8 @@ SAMBA: A Graph-Mamba Approach for Stock Price Prediction
 [**Paper**](https://arxiv.org/pdf/2410.03707) | [**Dataset**](https://www.kaggle.com/datasets/ehoseinz/stock-market-prediction/data)
 ===
 
+Latest files: https://data.mendeley.com/datasets/njg9yctdgf/1
+
 
 
 <p align="center">
@@ -54,4 +56,6 @@ month={Hyderabad, India, Apr.}
 
 Please feel free to contact us if you have any questions:
 - Ali Mehrabian: alimehrabian619@{ece.ubc.ca, yahoo.com}
+
+
 
